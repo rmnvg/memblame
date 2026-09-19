@@ -91,21 +91,30 @@ def resolve(repo: Path, rev: str) -> str:
 
 def first_parent_range(repo: Path, base: str, head: str) -> list[str]:
     """Commits from `base` (inclusive, as the baseline) to `head` along first parents."""
-    shas = git(repo, "rev-list", "--first-parent", "--reverse", f"{base}..{head}").split()
-    return [resolve(repo, base), *shas]
+    base_sha, head_sha = resolve(repo, base), resolve(repo, head)
+    if not is_first_parent_ancestor(repo, base_sha, head_sha):
+        raise GitError(f"{base!r} is not on the first-parent history of {head!r}")
+    shas = git(repo, "rev-list", "--first-parent", "--reverse",
+               f"{base_sha}..{head_sha}").split()
+    return [base_sha, *shas]
 
 
 def is_dirty(repo: Path) -> bool:
-    """Uncommitted changes to tracked files, or untracked (not ignored) Python files."""
-    if git(repo, "status", "--porcelain", "--untracked-files=no").strip():
-        return True
-    return bool(git(repo, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.py"))
+    """Any tracked or untracked (but not ignored) working-tree change."""
+    return bool(git(repo, "status", "--porcelain", "--untracked-files=normal").strip())
 
 
 def is_ancestor(repo: Path, older: str, newer: str) -> bool:
     proc = subprocess.run(["git", "merge-base", "--is-ancestor", older, newer], cwd=repo,
                           capture_output=True)
     return proc.returncode == 0
+
+
+def is_first_parent_ancestor(repo: Path, older: str, newer: str) -> bool:
+    """Whether `older` occurs on the chain formed by repeatedly taking `newer`'s first parent."""
+    if older == newer:
+        return True
+    return older in git(repo, "rev-list", "--first-parent", newer).split()
 
 
 # --------------------------------------------------------------------------- worktrees

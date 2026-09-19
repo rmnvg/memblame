@@ -164,11 +164,16 @@ def test_clean_working_tree_is_measured_once(tmp_path):
     assert out["findings"] == [] and out["notes"]
 
 
-def test_untracked_python_file_counts_as_a_change(tmp_path):
+def test_untracked_files_count_as_working_tree_changes(tmp_path):
     r = Repo(tmp_path / "repo")
     r.commit({"pkg/__init__.py": "", "pkg/a.py": "from pkg import b\n\n" + SMALL.replace(
         "return 1", "return b.load()"), "pkg/b.py": "def load():\n    return 1\n"}, "v1")
     (r.path / "pkg" / "b.py").write_text("def load():\n    return 1\n")
+    assert not git.is_dirty(r.path)
+    data = r.path / "settings.json"
+    data.write_text('{"size": 1000}\n')
+    assert git.is_dirty(r.path)  # data and config can affect an otherwise unchanged workload
+    data.unlink()
     assert not git.is_dirty(r.path)
     (r.path / "pkg" / "new mödule.py").write_text("x = 1\n")  # spaces + non-ASCII
     assert git.is_dirty(r.path)
@@ -193,6 +198,30 @@ def test_range_rejects_non_ancestor(tmp_path):
     r.commit({"y.py": ""}, "main")
     with session(r, "call:pkg.a:run") as s, pytest.raises(ValueError, match="not an ancestor"):
         api.range_(s, "side", "main")
+
+
+def test_range_rejects_ancestor_outside_first_parent_history(tmp_path):
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "root")
+    r.git("checkout", "-q", "-b", "side")
+    side = r.commit({"side.py": "x = 1\n"}, "side")
+    r.git("checkout", "-q", "main")
+    r.commit({"main.py": "x = 1\n"}, "mainline")
+    r.git("merge", "-q", "--no-ff", "side", "-m", "merge side")
+    assert git.is_ancestor(r.path, side, "HEAD")
+    assert not git.is_first_parent_ancestor(r.path, side, git.resolve(r.path, "HEAD"))
+    with session(r, "call:pkg.a:run") as s, pytest.raises(ValueError,
+                                                                  match="not on its first-parent"):
+        api.range_(s, side, "HEAD")
+
+
+def test_worktree_measurement_does_not_write_python_bytecode(tmp_path):
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "v1")
+    with session(r, "call:pkg.a:run") as s:
+        out = api.run(s, git.WORKTREE)
+    assert out["result"]["units"]["workload"]["outcome"] == "passed"
+    assert list(r.path.rglob("__pycache__")) == []
 
 
 def test_missing_dependency_gets_an_interpreter_hint(tmp_path):

@@ -266,10 +266,13 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
     g_commit, g = session.result(shas[0], "good ")
     b_commit, b = session.result(shas[-1], "bad ")
     out.update(good=g_commit.to_json(), bad=b_commit.to_json(), candidates=len(shas) - 2)
+    if unit and (unit not in g["units"] or unit not in b["units"]):
+        available = sorted(set(g["units"]) & set(b["units"]))
+        choices = ", ".join(available) if available else "none"
+        raise ValueError(f"unknown unit {unit!r}; units available on both endpoints: {choices}")
     broken = [c.short for c, r in ((g_commit, g), (b_commit, b))
               if not r["valid"] or not r["units"]
-              or any(u["outcome"] in ("failed", "error")
-                     for name, u in r["units"].items() if unit is None or name == unit)]
+              or any(u["outcome"] != "passed" for u in r["units"].values())]
     if broken:
         return {**out, "status": "error",
                 "warnings": _warnings(g_commit, g) + _warnings(b_commit, b),
@@ -297,6 +300,12 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
     else:
         limit = good_v + blame.noise_band(g["units"][unit_name][key], b["units"][unit_name][key])
     out.update(unit=unit_name, metric=metric_name, threshold=limit)
+    if good_v > limit:
+        raise ValueError(
+            f"good commit {g_commit.short} already exceeds the threshold for "
+            f"{unit_name} {metric_name} ({good_v} B > {limit} B); choose a lower-memory "
+            "good commit or a higher threshold"
+        )
     if bad_v <= limit:
         return {**out, "status": "no_regression",
                 "message": f"bad ({bad_v} B) does not exceed the threshold ({limit} B)"}
@@ -346,9 +355,13 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
 
 
 def _require_ancestor(repo: Path, older: str, newer: str) -> None:
-    if not git.is_ancestor(repo, git.resolve(repo, older), git.resolve(repo, newer)):
+    old_sha, new_sha = git.resolve(repo, older), git.resolve(repo, newer)
+    if not git.is_ancestor(repo, old_sha, new_sha):
         raise ValueError(f"{older} is not an ancestor of {newer}; memblame follows the "
                          "first-parent history from the older to the newer commit")
+    if not git.is_first_parent_ancestor(repo, old_sha, new_sha):
+        raise ValueError(f"{older} is an ancestor of {newer}, but is not on its first-parent "
+                         "history; choose a baseline from the mainline being analysed")
 
 
 def _brief(res: dict) -> dict:

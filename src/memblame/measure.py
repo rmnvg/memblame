@@ -115,7 +115,8 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
             "out": str(out_path),
         }
         spec_path.write_text(repr(spec), encoding="utf-8")  # read by eval: see runner.read_spec
-        env = {**os.environ, "PYTHONHASHSEED": "0", **s.extra_env}
+        env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
+               **s.extra_env}
         try:
             proc = subprocess.run(
                 [python, str(RUNNER), str(spec_path)], cwd=root, env=env,

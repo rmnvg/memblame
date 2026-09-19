@@ -82,9 +82,9 @@ inside the workload, e.g. `-w "script:'bench scripts/run.py'"`.
 
 Exit codes: `0` a completed check with no significant increase, `3` a significant memory
 increase was found (handy in CI), `1` error or incomplete measurement, `2` not a git repository.
-Failed workloads, invalid environments, and inconsistent repeated runs return `1` for
+Failed or skipped workloads, invalid environments, and inconsistent repeated runs return `1` for
 `run`, `diff`, and `range`, even if a partial report has findings. Bisect can still return
-`3` after skipping broken intermediate commits; unmeasurable or failing endpoints return `1`.
+`3` after skipping broken intermediate commits; unmeasurable or non-passing endpoints return `1`.
 
 ### Configuration
 
@@ -107,8 +107,10 @@ says so and uses the command line only.
 
 ## How it works
 
-1. Each commit is checked out into a temporary `git worktree` (your working tree is never
-   touched) and the workload runs in a fresh subprocess of **your project's interpreter**.
+1. Each committed revision is checked out into a temporary `git worktree`, so your current
+   checkout is never switched. `WORKTREE` workloads run in the current checkout and can still
+   create or modify files; memblame disables Python bytecode writes while running workloads.
+   Every workload runs in a fresh subprocess of **your project's interpreter**.
 2. Fast runs measure **peak** and **retained** (still allocated after the run) traced memory.
    They repeat until two runs agree, and the median is reported. `tracemalloc` counts
    are nearly deterministic: on real projects run-to-run noise was a few KB.
@@ -144,8 +146,9 @@ says so and uses the command line only.
 * pytest workloads always run in-process, in file order and without coverage: memblame
   adds `-n 0` (pytest-xdist), `-p no:randomly` and `--no-cov` (pytest-cov) when those
   plugins are installed.
-* A commit where the workload fails or that cannot be measured (crash, timeout) is skipped,
-  never reported as a memory change. `bisect` skips it the way `git bisect skip` does.
+* A commit where the workload fails, skips, or cannot be measured (crash, timeout) makes the
+  check incomplete, never a successful memory check. `bisect` can skip broken intermediate
+  commits the way `git bisect skip` does, but its endpoints must pass.
 * Adaptive `range` can miss a change that is exactly undone later within one unsplit
   segment. Use `--all` to measure every commit.
 * Attribution names where memory was **allocated**. For "kept alive too long" problems it

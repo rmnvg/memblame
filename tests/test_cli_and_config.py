@@ -88,6 +88,19 @@ def test_bisect_unit_option_and_json(planted, capsys):
     assert d["culprit"]["subject"] == "cache summarize results"
 
 
+def test_bisect_rejects_unknown_unit_and_already_exceeded_threshold(planted, capsys):
+    common = ["-C", str(planted.path), "-w", planted.workload, "--json", *PY]
+    endpoints = ["--good", planted.commits["initial"], "--bad", planted.commits["changelog"]]
+
+    code, out, err = run_cli(capsys, "bisect", *endpoints, "--unit", "not-a-unit", *common)
+    assert code == 1 and "unknown unit 'not-a-unit'" in err
+    assert json.loads(out)["kind"] == "error"
+
+    code, out, err = run_cli(capsys, "bisect", *endpoints, "--threshold", "1B", *common)
+    assert code == 1 and "good commit" in err and "already exceeds the threshold" in err
+    assert json.loads(out)["kind"] == "error"
+
+
 # ------------------------------------------------------------------ errors are clean
 
 

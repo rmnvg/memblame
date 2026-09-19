@@ -11,11 +11,11 @@ Working name: `memblame`. Change it any time.
 | 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
-| 5 VS Code extension | done; VSIX builds (~400 KB) | 14 node tests + 7-step integration test in real VS Code 1.131 |
+| 5 VS Code extension | done; VSIX builds (~400 KB) | 15 node tests + 7-step integration test in real VS Code 1.131 |
 | 6 Extras | not started | section 12 |
 
-Test suites: `pytest` (96 tests, ~120 s in the latest local macOS run),
-`ruff check src tests`, `cd vscode-ext && npm test` (14), `npm run test:integration`
+Test suites: `pytest` (103 tests, ~140 s in the latest local macOS run),
+`ruff check src tests`, `cd vscode-ext && npm test` (15), `npm run test:integration`
 (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
 CI (`.github/workflows/ci.yml`): Linux/macOS/Windows × Python 3.9/3.12/3.14 (all green,
@@ -78,7 +78,9 @@ which keeps it identical across commits), `call:<module>:<function>`.
 **Checkout.** One reusable detached worktree per command (`git worktree add` once, then
 `checkout --force` + `clean -fdx`), removed in `finally`. SIGTERM becomes `SystemExit`, so
 cancelling from the editor still cleans up. Uncommitted work = pseudo-revision `WORKTREE`
-(the repo itself; never cached).
+(the repo itself; never cached). MemBlame never switches the current checkout, but a
+`WORKTREE` workload can still create or modify files there. The runner disables Python
+bytecode writes.
 
 **Runner** (`runner.py`, standalone, stdlib-only, run by path; it must not import memblame).
 It sets `sys.path`: removes its own dir, prepends the pythonpath dirs (auto: `src` + `.` if
@@ -137,15 +139,16 @@ checkout makes the result `invalid_environment` (never cached, no findings).
 
 **Robustness.** pytest always runs in-process, in file order, without coverage (`-n 0`,
 `-p no:randomly`, `--no-cov` when those plugins exist). A unit whose outcome differs between
-two commits is reported as `outcome_changed`, never as a memory change. A commit that crashes
-or times out is a skipped point (range) or skipped like `git bisect skip` (bisect). If only one
-side of a comparison has a peak snapshot, the other is treated as empty and the verdict notes
-that the deltas are upper bounds. Stale worktrees from killed runs are removed via a pid file.
+two commits is reported as `outcome_changed`, never as a memory change. Failed or skipped
+pytest units make the overall check incomplete. A commit that crashes or times out is a
+skipped point (range) or skipped like `git bisect skip` (bisect). If only one side of a
+comparison has a peak snapshot, the other is treated as empty and the verdict notes that the
+deltas are upper bounds. Stale worktrees from killed runs are removed via a pid file.
 
 **Contract.** `--json` output has `"schema": 1`. Exit code 3 = significant increase found.
-Exit code 1 = error or incomplete measurement, including failed workloads, invalid
+Exit code 1 = error or incomplete measurement, including failed or skipped workloads, invalid
 environments and inconsistent repeated samples. Bisect may still succeed after skipping
-broken intermediate commits, but its endpoints must be measurable and not failing.
+broken intermediate commits, but its endpoints must be measurable and passed.
 Absolute repo-local script paths are normalized to follow each selected checkout; external
 scripts stay fixed. Fast samples must agree on unit names, outcomes and exit codes before
 aggregation. Environment checks cover every sample, and attribution is validated before merging.
@@ -286,8 +289,8 @@ Release checks:
 2. Verify ownership of the configured Marketplace publisher (`memblame`) and review the
    repository URL (`https://github.com/rmnvg/memblame`) and license metadata before release.
 3. Verify CI passes for the release commit. `.github/workflows/ci.yml` already defines
-   Linux/macOS/Windows Python tests, Ruff, extension unit tests, VSIX packaging and a real
-   VS Code integration test.
+   Linux/macOS/Windows Python tests, Ruff, a built-and-unpacked sdist test, extension unit
+   tests, VSIX packaging and a real VS Code integration test.
 4. `python -m build && twine upload` for the CLI; `npx vsce publish` (and Open VSX for
    Cursor/VSCodium users) for the extension.
 5. Record the GIF.

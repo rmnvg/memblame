@@ -4,7 +4,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { buildArgs, runMemblame } from "./cli";
 import { mb, renderHtml } from "./render";
-import { findTests, isTestFile, locateScope, pytestWorkload, suggestWorkloads } from "./workload";
+import { findTests, isTestFile, locateScope, pytestWorkload, suggestWorkloads, tomlDefinesWorkload } from "./workload";
 
 let panel: vscode.WebviewPanel | undefined;
 let state: vscode.ExtensionContext | undefined;
@@ -137,8 +137,16 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
     if (!repo) {
       return;
     }
-    const workload = workloadArg ?? (await chooseWorkload(false));
+    let workload = workloadArg;
     if (!workload) {
+      const cfgWorkload = vscode.workspace.getConfiguration("memblame").get<string>("workload");
+      workload = cfgWorkload || state?.workspaceState.get<string>("workload");
+    }
+    const fromRepoConfig = !workload && (await repositoryDefinesWorkload(repo));
+    if (!workload && !fromRepoConfig) {
+      workload = await chooseWorkload(false);
+    }
+    if (!workload && !fromRepoConfig) {
       return;
     }
     const cfg = vscode.workspace.getConfiguration("memblame");
@@ -193,6 +201,22 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
   }
 
   return api;
+}
+
+async function repositoryDefinesWorkload(repo: string): Promise<boolean> {
+  for (const [name, pyproject] of [["memblame.toml", false], ["pyproject.toml", true]] as const) {
+    try {
+      const contents = await fs.promises.readFile(path.join(repo, name), "utf8");
+      if (tomlDefinesWorkload(contents, pyproject)) {
+        return true;
+      }
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") {
+        throw err;
+      }
+    }
+  }
+  return false;
 }
 
 export function deactivate() {
