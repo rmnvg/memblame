@@ -76,7 +76,7 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
         kind, _, target = s.workload.partition(":")
         spec = {
             "workload": s.workload,
-            "argv": shlex.split(target) if kind in ("script", "pytest") else [],
+            "argv": split_args(target) if kind in ("script", "pytest") else [],
             "root": str(root),
             "pythonpath": s.pythonpath,
             "nframe": nframe,
@@ -105,6 +105,19 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
     if result.get("schema") != SCHEMA:
         raise MeasureError("runner schema mismatch")
     return result
+
+
+def split_args(text: str) -> list[str]:
+    """Split workload arguments like the platform's shell.
+
+    POSIX rules treat backslashes as escapes, which would turn a Windows path such as
+    C:\\bench\\run.py into C:benchrun.py; on Windows split without escapes and drop the
+    quotes around quoted tokens ("C:\\my dir\\run.py").
+    """
+    if os.name != "nt":
+        return shlex.split(text)
+    tokens = shlex.split(text, posix=False)
+    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
 
 def _stats(samples: list[int]) -> dict:
@@ -267,7 +280,7 @@ def external_script_hash(repo: Path, workload: str) -> str:
     kind, _, target = workload.partition(":")
     if kind != "script" or not target.strip():
         return ""
-    path = Path(shlex.split(target)[0])
+    path = Path(split_args(target)[0])
     if not path.is_absolute():
         return ""
     try:

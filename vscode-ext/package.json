@@ -138,6 +138,22 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/OWNER/memblame"
+    "url": "https://github.com/rmnvg/memblame"
+  },
+  "preview": true,
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "MemBlame runs your project's code (tests, scripts, functions) to measure memory, so it only works in trusted workspaces."
+    },
+    "virtualWorkspaces": false
+  },
+  "homepage": "https://github.com/rmnvg/memblame#readme",
+  "bugs": {
+    "url": "https://github.com/rmnvg/memblame/issues"
+  },
+  "galleryBanner": {
+    "color": "#1f2937",
+    "theme": "dark"
   }
 }

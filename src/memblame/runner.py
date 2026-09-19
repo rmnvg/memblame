@@ -449,7 +449,10 @@ def pytest_extra_args() -> list[str]:
     try:
         from importlib.metadata import entry_points
 
-        plugins = {ep.name for ep in entry_points(group="pytest11")}
+        eps = entry_points()
+        # Python 3.9 returns a dict and has no group= keyword; 3.10+ has .select()
+        group = eps.select(group="pytest11") if hasattr(eps, "select") else eps.get("pytest11", [])
+        plugins = {ep.name for ep in group}
     except Exception:  # noqa: BLE001 - metadata problems must not stop the measurement
         plugins = set()
     if "xdist.plugin" in plugins or "xdist" in plugins:

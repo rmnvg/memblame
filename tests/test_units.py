@@ -2,6 +2,7 @@
 
 import textwrap
 import tracemalloc
+from pathlib import Path
 
 import pytest
 
@@ -57,7 +58,7 @@ def test_fast_trace_grouping_matches_public_api(monkeypatch):
         snap = tracemalloc.take_snapshot()
     finally:
         tracemalloc.stop()
-    root = __file__.rsplit("/", 2)[0]
+    root = str(Path(__file__).resolve().parents[1])
     fast = Attributor(root, set()).summarize(snap.traces._traces, 1)
 
     def public(_raw):
@@ -67,7 +68,10 @@ def test_fast_trace_grouping_matches_public_api(monkeypatch):
 
     monkeypatch.setattr("memblame.runner._grouped_traces", public)
     slow = Attributor(root, set()).summarize([], 1)
+    # statistics("traceback") drops total_nframe, so "truncated" is only known on the fast path
+    fast.pop("truncated"), slow.pop("truncated")
     assert fast == slow and keep and fast["total"] > 1_000_000
+    assert fast["functions"], "the test's own frames must be attributed to the project"
     assert list(_grouped_traces(snap.traces._traces))
 
 
@@ -187,3 +191,12 @@ def test_property_getter_and_setter_share_one_range(tmp_path):
     info = a.functions[fid]
     assert info["qualname"] == "State.src"
     assert (info["start"], info["end"]) == (2, 9)  # getter decorator .. setter end
+
+
+def test_split_args_keeps_windows_paths(monkeypatch):
+    from memblame import measure
+
+    assert measure.split_args("run.py --n '1 2'") == ["run.py", "--n", "1 2"]
+    monkeypatch.setattr(measure.os, "name", "nt")
+    assert measure.split_args(r'C:\bench\run.py --out "C:\my dir\x.txt"') == [
+        r"C:\bench\run.py", "--out", r"C:\my dir\x.txt"]

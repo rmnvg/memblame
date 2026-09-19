@@ -315,7 +315,10 @@ function renderBisect(d: any): string {
 }
 
 export function renderBody(d: any): string {
-  const meta = `<p class="muted">workload <code>${esc(d.workload)}</code> · ${esc(d.python)}</p>`;
+  const py = String(d.python ?? "");
+  const repo = String(d.repo ?? "");
+  const shownPy = repo && py.startsWith(repo + "/") ? py.slice(repo.length + 1) : py;
+  const meta = `<p class="muted">workload <code>${esc(d.workload)}</code> · ${esc(shownPy)}</p>`;
   let body: string;
   switch (d.kind) {
     case "range":

@@ -29,7 +29,7 @@ Findings:
 There is also a **VS Code extension** (in `vscode-ext/`) that shows a timeline, CodeLens
 above the blamed function, and a one-click "Memory vs HEAD" on every pytest test.
 
-![report](vscode-ext/media/report-range.png)
+![report](https://raw.githubusercontent.com/rmnvg/memblame/main/vscode-ext/media/report-range.png)
 
 ## Install
 

@@ -5,7 +5,7 @@
 MemBlame runs one of your pytest tests, scripts or functions at several git commits,
 measures memory, and points at the function and the diff hunk responsible.
 
-![Timeline of memory by commit with two regressions blamed on functions](media/report-range.png)
+![Timeline of memory by commit with two regressions blamed on functions](https://raw.githubusercontent.com/rmnvg/memblame/main/vscode-ext/media/report-range.png)
 
 ## What you can do
 
@@ -22,7 +22,7 @@ measures memory, and points at the function and the diff hunk responsible.
 - After a run, the blamed function gets a CodeLens (`↑ peak memory +28.2 MB`) and hot
   lines are annotated inline.
 
-![Comparison report](media/report-diff.png)
+![Comparison report](https://raw.githubusercontent.com/rmnvg/memblame/main/vscode-ext/media/report-diff.png)
 
 ## Getting started
 
@@ -70,3 +70,5 @@ slower attribution run that maps memory to functions and to the lines in `git di
   `memblame.importPaths`.
 
 The same engine is available as a CLI (`pip install memblame`) for CI and terminals.
+
+**Privacy:** MemBlame sends nothing anywhere. It runs locally, in trusted workspaces only.

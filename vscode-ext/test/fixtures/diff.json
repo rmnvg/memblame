@@ -1,9 +1,9 @@
 {
  "schema": 1,
  "kind": "diff",
- "repo": "/private/tmp/claude-501/-Users-ramanjot-Desktop-memblame/b5e70793-ba4d-4f42-bde4-9c85de0cd1a4/scratchpad/fx",
+ "repo": "/home/dev/shop",
  "workload": "call:shop.app:run",
- "python": "/Users/ramanjot/Desktop/memblame/.venv/bin/python",
+ "python": "/home/dev/shop/.venv/bin/python",
  "base": {
   "sha": "5e69fdb8604c527148a617f654407c508a93ea17",
   "short": "5e69fdb",

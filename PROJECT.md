@@ -48,9 +48,17 @@ seen "it worked last month" on a memory-limited container.
   them) show one run of one version.
 - Cross-commit tracking: CPython Memory Insights (CPython only), `asv` (RSS-based peak
   metric), pytest-benchmem (no cross-commit history).
-- Gap: local, per-commit Python memory comparison with **function-level attribution mapped to
-  the git diff**, in the editor. Do NOT claim "first ever". Claim: *"per-commit Python memory
-  regression tracking with function-level blame, inside your editor."*
+- **Re-checked 2026-09-19:** CodSpeed (hosted CI service) now tracks heap allocations per
+  benchmark with differential flame graphs between base and head commits; pytest-memray's
+  `fail-on-increase` fails a test that allocates more than its last successful run. Both are
+  CI-forward: they only know commits that ran after you set them up.
+- What memblame still does that they don't: works **retroactively on any past commit**
+  (range/bisect over existing history, no prior setup), **local and free** (no service, no
+  account, stdlib only, Windows/macOS/Linux), maps growth to the **git diff hunk** with a
+  direct/indirect verdict, and lives in the editor ("Memory vs HEAD" before you commit).
+- Do NOT claim "first" or "only tool that compares commits". Claim: *"Find the commit and the
+  function that made your Python code use more memory — retroactively, locally, in your
+  editor."*
 
 ## 3. Goals and non-goals
 

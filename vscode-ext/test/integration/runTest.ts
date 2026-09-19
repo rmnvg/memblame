@@ -27,7 +27,7 @@ async function main() {
     vscodeExecutablePath: process.env.VSCODE_EXECUTABLE,
     extensionDevelopmentPath: extRoot,
     extensionTestsPath: path.join(__dirname, "suite"),
-    launchArgs: [repo, "--disable-extensions", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${path.join(work, "ud")}`],
+    launchArgs: [repo, "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${path.join(work, "ud")}`],
     extensionTestsEnv: { MEMBLAME_TEST_REPO: repo },
   });
 }
