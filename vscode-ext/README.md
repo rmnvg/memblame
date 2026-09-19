@@ -30,7 +30,9 @@ measures memory, and points at the function and the diff hunk responsible.
 2. Select your project's interpreter with the Python extension, or set `memblame.pythonPath`.
    MemBlame runs your code with it, so your dependencies must be installed there.
 3. Click **Memory vs HEAD** above a test, or run **MemBlame: Choose Workload…** and then any
-   MemBlame command from the Command Palette.
+   MemBlame command from the Command Palette. The chosen workload is remembered per
+   workspace (nothing is written into your repository); the `memblame.workload` setting,
+   if set, takes precedence.
 
 Nothing needs to be installed with pip: the engine is bundled with the extension and uses
 only the Python standard library.
@@ -59,6 +61,10 @@ slower attribution run that maps memory to functions and to the lines in `git di
 - Tracing slows code down (several times, more for attribution), so choose a small,
   deterministic test.
 - All commits run with your currently installed dependencies.
+- pytest runs in-process and in file order, without coverage, even if your pytest config
+  uses pytest-xdist, pytest-randomly or pytest-cov.
+- A commit where the test fails, or that cannot be measured, is skipped rather than
+  reported as a memory change.
 - If imports resolve outside the checked-out commit (for example an editable install with
   a `src/` layout), MemBlame reports **invalid environment** instead of wrong numbers. Set
   `memblame.importPaths`.

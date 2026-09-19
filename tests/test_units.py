@@ -57,17 +57,18 @@ def test_fast_trace_grouping_matches_public_api(monkeypatch):
         snap = tracemalloc.take_snapshot()
     finally:
         tracemalloc.stop()
-    fast = Attributor(__file__.rsplit("/", 2)[0], set()).summarize(snap, 1)
+    root = __file__.rsplit("/", 2)[0]
+    fast = Attributor(root, set()).summarize(snap.traces._traces, 1)
 
-    def public(s):
-        for stat in s.statistics("traceback"):
+    def public(_raw):
+        for stat in snap.statistics("traceback"):
             frames = tuple((f.filename, f.lineno) for f in reversed(stat.traceback))
             yield frames, stat.size, stat.traceback.total_nframe
 
     monkeypatch.setattr("memblame.runner._grouped_traces", public)
-    slow = Attributor(__file__.rsplit("/", 2)[0], set()).summarize(snap, 1)
-    assert fast == slow and keep
-    assert list(_grouped_traces(snap))
+    slow = Attributor(root, set()).summarize([], 1)
+    assert fast == slow and keep and fast["total"] > 1_000_000
+    assert list(_grouped_traces(snap.traces._traces))
 
 
 SOURCE = textwrap.dedent('''\

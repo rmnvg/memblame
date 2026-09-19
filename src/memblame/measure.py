@@ -20,6 +20,7 @@ RUNNER = Path(__file__).with_name("runner.py")
 FAST_NFRAME = 1  # peak bytes do not depend on traceback depth, so timing runs stay cheap
 AGREE_REL, AGREE_ABS = 0.001, 8192  # two fast runs this close -> skip the remaining runs
 MIN_COVERAGE = 0.9  # a peak snapshot must hold >= 90% of the peak, else retry with the hook
+HOOK_HINT_FRACTION = 0.5  # the hook retry snapshots from 50% of the peak (<= ~35 snapshots)
 
 
 class MeasureError(RuntimeError):
@@ -69,20 +70,23 @@ def environment_fingerprint(python: str) -> str:
 
 
 def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | None,
-              attribute: bool, peak_mode: str = "poll") -> dict:
+              attribute: bool, peak_mode: str = "poll", hint_fraction: float = 0.9) -> dict:
     with tempfile.TemporaryDirectory(prefix="mb-run-") as tmp:
         spec_path, out_path = Path(tmp, "spec.json"), Path(tmp, "out.json")
+        kind, _, target = s.workload.partition(":")
         spec = {
             "workload": s.workload,
+            "argv": shlex.split(target) if kind in ("script", "pytest") else [],
             "root": str(root),
             "pythonpath": s.pythonpath,
             "nframe": nframe,
             "hints": hints,
             "attribute": attribute,
             "peak_mode": peak_mode,
+            "hint_fraction": hint_fraction,
             "out": str(out_path),
         }
-        spec_path.write_text(json.dumps(spec))
+        spec_path.write_text(repr(spec), encoding="utf-8")  # read by eval: see runner.read_spec
         env = {**os.environ, "PYTHONHASHSEED": "0", **s.extra_env}
         try:
             proc = subprocess.run(
@@ -195,28 +199,39 @@ def add_attribution(python: str, root: Path, s: Settings, result: dict) -> dict:
     missed = {name for name, u in result["units"].items()
               if ((u["at_peak"] or {}).get("coverage") or 0) < MIN_COVERAGE}
     if missed:
-        exact = _run_once(python, root, s, s.nframe, hints, attribute=True, peak_mode="hook")
-        _merge_attribution(result, exact, missed)
+        # Exact hook, snapshotting from half the peak: when the true peak is a temporary
+        # inside one C call (never observable), we still get the largest observable state.
+        exact = _run_once(python, root, s, s.nframe, hints, attribute=True, peak_mode="hook",
+                          hint_fraction=HOOK_HINT_FRACTION)
+        _merge_attribution(result, exact, missed, keep_better=True)
     result["functions"] = {**deep["functions"], **(exact["functions"] if missed else {})}
     result["attributed"] = True
     return result
 
 
-def _merge_attribution(result: dict, run: dict, names: set[str]) -> None:
+def _merge_attribution(result: dict, run: dict, names: set[str], keep_better: bool = False,
+                       ) -> None:
     for u in run["units"]:
         target = result["units"].get(u["name"])
-        if target is not None and u["name"] in names:
-            target["at_peak"], target["retained"] = u["at_peak"], u["retained"]
+        if target is None or u["name"] not in names:
+            continue
+        old_cov = (target["at_peak"] or {}).get("coverage") or 0
+        new_cov = (u["at_peak"] or {}).get("coverage") or 0
+        if not keep_better or new_cov > old_cov:
+            target["at_peak"] = u["at_peak"]
+        if not keep_better or target["retained"] is None:
+            target["retained"] = u["retained"]
 
 
 def _hint(unit: dict, python: str) -> str:
     """Turn the most common setup mistake into a readable hint."""
     error = unit.get("error") or ""
+    last = next((ln.strip() for ln in reversed(error.splitlines()) if ln.strip()), "")
     if "ModuleNotFoundError" in error or "No module named" in error:
         missing = error.rsplit("No module named", 1)[-1].strip().splitlines()[0]
         return (f" (No module named {missing}; the interpreter used was {python}. Pass --python "
                 "with the interpreter that has your project's dependencies)")
-    return ""
+    return f": {last[:200]}" if last else ""
 
 
 def _unit_names(runs: list[dict]) -> list[str]:
@@ -233,6 +248,14 @@ def _units(runs: list[dict], name: str) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- cache
+
+
+def engine_hash() -> str:
+    """Hash of memblame's own measuring code: upgrading memblame invalidates old results."""
+    h = hashlib.sha256()
+    for name in ("runner.py", "measure.py"):
+        h.update(RUNNER.with_name(name).read_bytes())
+    return h.hexdigest()[:12]
 
 
 def external_script_hash(repo: Path, workload: str) -> str:
@@ -266,9 +289,8 @@ class Cache:
         self.enabled = enabled
         self._salt = ""
         if enabled:
-            runner_hash = hashlib.sha256(RUNNER.read_bytes()).hexdigest()[:12]
             self._salt = json.dumps(
-                [settings.fingerprint(), environment_fingerprint(python), runner_hash, SCHEMA,
+                [settings.fingerprint(), environment_fingerprint(python), engine_hash(), SCHEMA,
                  external_script_hash(repo, settings.workload)],
                 sort_keys=True,
             )

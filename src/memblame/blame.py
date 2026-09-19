@@ -19,6 +19,7 @@ FUNC_SHARE = 0.10  # a function must explain >= 10% of the unit change to be a c
 TIE_SHARE = 0.90  # changed functions within 90% of the best growth are treated as tied
 MAX_FUNCS = 15
 NOISE_BYTES = 4096  # per-function differences below this are interpreter noise
+MIN_COVERAGE = 0.9  # below this share of the peak, say that the snapshot is partial
 TRUNCATED_NOTE = 0.05  # mention truncated stacks when they hide more than 5% of the memory
 
 
@@ -150,6 +151,11 @@ def compare_metric(a_unit: dict, b_unit: dict, metric: str, a_functions: dict,
     # Where the memory lives: at head for growth, at base for memory that went away.
     where = b_sum if sign > 0 else a_sum
     out["verdict"] = _verdict(rows, delta, sign, where) if out["significant"] else {"kind": "none"}
+    covs = [c for c in (a_sum.get("coverage"), b_sum.get("coverage")) if c is not None]
+    low = min(covs, default=1) if metric == "peak" else 1
+    if low < MIN_COVERAGE and not note:
+        note = (f"the peak snapshot holds only {low:.0%} of the peak (the true peak is a "
+                "temporary inside a single C call); attribution uses the largest observable state")
     if note and out["significant"]:
         out["verdict"]["note"] = note
     return out

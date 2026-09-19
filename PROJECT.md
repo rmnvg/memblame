@@ -11,12 +11,16 @@ Working name: `memblame`. Change it any time.
 | 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
-| 5 VS Code extension | done; VSIX builds (399 KB) | 10 node tests + 6-step integration test in real VS Code 1.131 |
+| 5 VS Code extension | done; VSIX builds (~400 KB) | 12 node tests + 7-step integration test in real VS Code 1.131 |
 | 6 Extras | not started | section 12 |
 
-Test suites: `pytest` (31 tests, ~75 s), `ruff check src tests`,
-`cd vscode-ext && npm test` (10), `npm run test:integration` (launches VS Code; set
+Test suites: `pytest` (46 tests, ~95 s, order-independent under pytest-randomly),
+`ruff check src tests`, `cd vscode-ext && npm test` (12), `npm run test:integration`
+(7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
+CI (`.github/workflows/ci.yml`): Linux/macOS/Windows × Python 3.9/3.12/3.14 + extension build.
+Supported Pythons: 3.9–3.14 (full suite run locally on 3.9 and 3.12; unit + edge suites on
+3.10, 3.11, 3.13, 3.14). Windows has not been run yet; CI will be the first run.
 
 ## 1. One-paragraph summary
 
@@ -115,12 +119,20 @@ binary-searches the first-parent chain and reports `monotonic: false` plus a war
 measured points are not good…good,bad…bad.
 
 **Cache.** `.memblame/cache/<sha>-<key>.json` (with a `.gitignore`), keyed by the settings,
-interpreter version + installed distributions, runner source hash and schema. Attribution
+interpreter version + installed distributions, the engine's source (runner + measure),
+the schema, and the content of a `script:` file that lives outside the repo. Attribution
 is added to the cached entry when it is computed.
 
 **Environment check.** After the run, any imported module whose top-level name is a project
 package (found in root, `src/` and the configured paths) but whose `__file__` is outside the
 checkout makes the result `invalid_environment` (never cached, no findings).
+
+**Robustness.** pytest always runs in-process, in file order, without coverage (`-n 0`,
+`-p no:randomly`, `--no-cov` when those plugins exist). A unit whose outcome differs between
+two commits is reported as `outcome_changed`, never as a memory change. A commit that crashes
+or times out is a skipped point (range) or skipped like `git bisect skip` (bisect). If only one
+side of a comparison has a peak snapshot, the other is treated as empty and the verdict notes
+that the deltas are upper bounds. Stale worktrees from killed runs are removed via a pid file.
 
 **Contract.** `--json` output has `"schema": 1`. Exit code 3 = significant increase found.
 
@@ -153,6 +165,12 @@ vscode-ext/
 
 ## 7. Testing strategy (as built)
 
+- `tests/test_edge_cases.py` (added in the review pass, each test verified to fail on the
+  pre-fix code): xdist/pytest-cov/pytest-randomly in the project's pytest config, commits
+  that break the workload (not an "improvement"; bisect skips them), a commit that times
+  out, edits to an external benchmark invalidating the cache, a clean working tree measured
+  once, untracked and non-ASCII/space paths, non-ancestor ranges, missing-dependency hints,
+  stale worktrees from killed runs, sibling imports + latin-1 sources, async workloads.
 - Planted fixture: `direct` (peak +28 MB in `load_rows`) and `retention` (retained +58 MB,
   blamed on the changed `summarize`, allocated in the unchanged `load_rows`). Tests assert the
   exact commits, metrics and functions, for `diff`, adaptive and exhaustive `range` (same
@@ -186,6 +204,19 @@ vscode-ext/
    36 s at 16. That is why the numbers come from 1-frame runs and attribution is lazy.
 7. **New: determinism**: fast runs of the same commit differ by a few KB; across 33
    markdown-it-py commits the largest non-change was 36 KB on 7.5 MB.
+8. **New: the runner must not preload modules.** Anything imported before tracing starts
+   is free for the workload. The review pass briefly made the runner import `inspect`, which
+   hid most of a real tomlkit regression (`import dataclasses` → `inspect`). The runner now
+   uses `_tracemalloc` (the C core), `compile()` + `exec` for scripts and `__import__` for
+   `call:`, and reads its spec with `eval` instead of `json`: at workload start it has
+   loaded only `__future__`, `_tracemalloc` and `gc` beyond a bare interpreter (was 53
+   modules). A test guards this.
+9. **New: `retained` excludes the script's own globals** (cleared like `runpy` does), so it
+   measures what outlives the workload: caches, module state, leaks.
+10. **New: some peaks are unobservable.** On 3.14, `tuple(generator)` builds a temporary that
+    roughly doubles memory inside one C call; no hook can see it. The hook fallback now
+    snapshots from 50 % of the peak and keeps the best capture; verdicts say when coverage
+    is partial.
 
 ## 9. Risks and honest limits (also in README)
 

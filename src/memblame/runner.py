@@ -6,13 +6,15 @@ This file must stay stdlib-only and must not import the rest of memblame: the pr
 interpreter usually does not have memblame installed. The parent process imports it as
 `memblame.runner` to reuse the AST helpers.
 
-Spec (JSON):
+Spec (a Python literal, read with eval so that no parser module has to be imported):
     workload   "call:pkg.mod:func" | "script:path [args]" | "pytest:<node ids...>"
+    argv       the script/pytest arguments, already split by the parent
     root       absolute path of the checkout being measured
     pythonpath list of root-relative dirs to put first on sys.path (default: auto)
     nframe     tracemalloc traceback depth
     hints      {unit name: peak bytes from a previous run} -> enables peak attribution
     attribute  false -> numbers only (no snapshots), for cheap timing runs
+    hint_fraction  start snapshotting at this fraction of the hinted peak (default 0.9)
     peak_mode  "poll" (cheap background thread, misses sub-millisecond peaks) or "hook"
                (profile hook on every return: exact, but 10x+ slower on call-heavy code)
     out        path to write the result JSON to
@@ -20,19 +22,15 @@ Spec (JSON):
 
 from __future__ import annotations
 
-import ast
+# Only modules a bare interpreter has already loaded (or builtins) are imported up front:
+# anything the runner imports before tracing starts is "free" for the workload, which would
+# hide import-time memory (e.g. a commit adding `import dataclasses` pulls in `inspect`).
+# Everything else is imported lazily, after tracing stops or only in attribution runs.
+import _tracemalloc as _tm  # the C core of tracemalloc: no pickle/linecache/re imports
 import gc
-import inspect
-import json
 import os
-import shlex
 import sys
-import threading
 import time
-import tokenize
-import traceback
-import tracemalloc
-from collections import defaultdict
 
 SCHEMA = 1
 HINT_FRACTION = 0.9  # start snapshotting once memory reaches 90% of the known peak
@@ -53,13 +51,15 @@ def scopes_from_source(source: str) -> list[tuple[int, int, int, str]]:
     `def_line` is the line of the `def`/`class` keyword (frames inside the body never point
     above it); `first_line` includes decorators and is used for diff-hunk matching.
     """
+    import ast
+
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return []
     out: list[tuple[int, int, int, str]] = []
 
-    def visit(node: ast.AST, prefix: str) -> None:
+    def visit(node, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 name = f"{prefix}{child.name}"
@@ -124,6 +124,8 @@ class Attributor:
         result = None
         if rel is not None:
             if rel not in self._scope_cache:
+                import tokenize
+
                 try:
                     with tokenize.open(filename) as fh:  # honours "# -*- coding: ... -*-"
                         self._scope_cache[rel] = scopes_from_source(fh.read())
@@ -149,13 +151,15 @@ class Attributor:
         self._frame_cache[key] = result
         return result
 
-    def summarize(self, snapshot: tracemalloc.Snapshot, reference_bytes: int) -> dict:
+    def summarize(self, traces: list, reference_bytes: int) -> dict:
         """Aggregate a snapshot into per-function self/cumulative bytes and top lines."""
+        from collections import defaultdict
+
         self_bytes: dict[str, int] = defaultdict(int)
         cum_bytes: dict[str, int] = defaultdict(int)
         line_bytes: dict[tuple[str, int], int] = defaultdict(int)
         total = unattributed = truncated = 0
-        for frames, size, total_nframe in _grouped_traces(snapshot):
+        for frames, size, total_nframe in _grouped_traces(traces):
             total += size
             seen: set[str] = set()
             first = True
@@ -192,29 +196,24 @@ class Attributor:
         }
 
 
-def _grouped_traces(snapshot: tracemalloc.Snapshot):
+def _grouped_traces(traces: list):
     """Yield (frames most-recent-first, total size, total_nframe) per distinct traceback.
 
-    Fast path: the raw trace tuples `(domain, size, frames, total_nframe)` behind
-    `snapshot.traces` share one frames tuple per distinct traceback, so grouping by identity
-    is ~20x faster than `snapshot.statistics("traceback")`, which builds objects per trace.
-    Falls back to the public API if the private layout ever changes.
+    `traces` is the raw list from `_tracemalloc._get_traces()` (what `take_snapshot()` wraps):
+    tuples `(domain, size, frames, total_nframe)`. The C side shares one frames tuple per
+    distinct traceback, so grouping by identity is ~20x faster than
+    `Snapshot.statistics("traceback")`, which builds objects per trace.
     """
-    raw = getattr(snapshot.traces, "_traces", None)
-    if isinstance(raw, list) and (not raw or (isinstance(raw[0], tuple) and len(raw[0]) == 4)):
-        groups: dict[int, list] = {}
-        for _domain, size, frames, total_nframe in raw:
-            g = groups.get(id(frames))
-            if g is None:
-                groups[id(frames)] = [frames, size, total_nframe]
-            else:
-                g[1] += size
-        for frames, size, total_nframe in groups.values():
-            yield frames, size, total_nframe
-        return
-    for stat in snapshot.statistics("traceback"):
-        frames = tuple((f.filename, f.lineno) for f in reversed(stat.traceback))
-        yield frames, stat.size, getattr(stat.traceback, "total_nframe", None)
+    groups: dict[int, list] = {}
+    for trace in traces:
+        frames, size = trace[2], trace[1]
+        g = groups.get(id(frames))
+        if g is None:
+            groups[id(frames)] = [frames, size, trace[3] if len(trace) > 3 else None]
+        else:
+            g[1] += size
+    for frames, size, total_nframe in groups.values():
+        yield frames, size, total_nframe
 
 
 # --------------------------------------------------------------------------- measuring
@@ -224,26 +223,28 @@ class Meter:
     """Measures one unit (a whole call/script, or one pytest test)."""
 
     def __init__(self, nframe: int, attributor: Attributor, hints: dict[str, int],
-                 attribute: bool = True, peak_mode: str = "poll"):
+                 attribute: bool = True, peak_mode: str = "poll",
+                 hint_fraction: float = HINT_FRACTION):
+        self.hint_fraction = hint_fraction
         self.nframe = nframe
         self.attribute = attribute
         self.peak_mode = peak_mode
-        self._poller: threading.Thread | None = None
-        self._stop_poll = threading.Event()
+        self._poller = None
+        self._stop_poll = None
         self.attr = attributor
         self.hints = hints
         self.units: list[dict] = []
         self._name = ""
         self._t0 = 0.0
         self._best = 0
-        self._snapshot: tracemalloc.Snapshot | None = None
+        self._snapshot: list | None = None  # raw traces at (near) the peak
         self._threshold = 0
 
     def _check(self) -> None:
-        current = tracemalloc.get_traced_memory()[0]
+        current = _tm.get_traced_memory()[0]
         if current >= self._threshold and current > self._best * SNAPSHOT_STEP:
             self._best = current
-            self._snapshot = tracemalloc.take_snapshot()
+            self._snapshot = _tm._get_traces()
 
     def _hook(self, frame, event, arg):  # sys.setprofile callback
         if event == "return" or event == "c_return":
@@ -259,45 +260,50 @@ class Meter:
         self._snapshot = None
         hint = self.hints.get(name)
         gc.collect()
-        tracemalloc.start(self.nframe)
-        if hint:
-            self._threshold = int(hint * HINT_FRACTION)
+        _tm.start(self.nframe)
+        if hint:  # attribution runs only; their numbers are not samples
+            import threading
+
+            self._threshold = int(hint * self.hint_fraction)
             if self.peak_mode == "hook":
                 threading.setprofile(self._hook)
                 sys.setprofile(self._hook)
             else:
-                self._stop_poll.clear()
+                self._stop_poll = threading.Event()
                 self._switch = sys.getswitchinterval()
                 sys.setswitchinterval(POLL_INTERVAL)  # let the poller get the GIL often
                 self._poller = threading.Thread(target=self._poll, daemon=True)
                 self._poller.start()
         self._t0 = time.perf_counter()
 
-    def stop(self, outcome: str, error: str | None = None) -> None:
+    def stop(self, outcome: str, error: str | BaseException | None = None) -> None:
         duration = time.perf_counter() - self._t0
         sys.setprofile(None)
-        threading.setprofile(None)  # type: ignore[arg-type]
+        if "threading" in sys.modules:
+            sys.modules["threading"].setprofile(None)
         if self._poller is not None:
             self._stop_poll.set()
             self._poller.join()
             self._poller = None
             sys.setswitchinterval(self._switch)
-        peak = tracemalloc.get_traced_memory()[1]
+        peak = _tm.get_traced_memory()[1]
         gc.collect()
-        end_bytes = tracemalloc.get_traced_memory()[0]
-        end_snapshot = tracemalloc.take_snapshot() if self.attribute else None
-        tracemalloc.stop()  # before summarizing: analysis under tracing is ~20x slower
+        end_bytes = _tm.get_traced_memory()[0]
+        end_snapshot = _tm._get_traces() if self.attribute else None
+        _tm.stop()  # before summarizing: analysis under tracing is ~20x slower
         unit = {
             "name": self._name,
             "outcome": outcome,
             "peak_bytes": peak,
             "end_bytes": end_bytes,
             "duration_s": round(duration, 4),
-            "retained": self.attr.summarize(end_snapshot, end_bytes) if end_snapshot else None,
+            "retained": (self.attr.summarize(end_snapshot, end_bytes)
+                         if end_snapshot is not None else None),
             "at_peak": self.attr.summarize(self._snapshot, peak) if self._snapshot else None,
         }
         if error:
-            unit["error"] = error[-4000:]
+            text = error if isinstance(error, str) else _format_exc(error)
+            unit["error"] = text[-4000:]
         self.units.append(unit)
 
 
@@ -346,21 +352,20 @@ def check_environment(root: str, dirs: list[str]) -> list[str]:
 
 
 def _run_call(target: str, meter: Meter) -> None:
-    import importlib
-
     module_name, _, func_name = target.partition(":")
     if not func_name:
         raise ValueError("call workload must look like call:package.module:function")
     meter.start("workload")
     try:
-        func = getattr(importlib.import_module(module_name), func_name)
+        __import__(module_name)  # builtin: importlib would preload extra modules
+        func = getattr(sys.modules[module_name], func_name)
         result = func()
-        if inspect.isawaitable(result):
+        if hasattr(result, "__await__"):  # async def workload
             import asyncio
 
             asyncio.run(_await(result))
     except BaseException as exc:  # noqa: BLE001 - report every failure, keep measuring
-        meter.stop("error", _format_exc(exc))
+        meter.stop("error", exc)
         return
     meter.stop("passed")
 
@@ -369,26 +374,43 @@ async def _await(awaitable):
     return await awaitable
 
 
-def _run_script(target: str, meter: Meter) -> None:
-    import runpy
+def _run_script(argv: list[str], meter: Meter) -> None:
+    """Run like `python script.py`: own dir first on sys.path, __name__ == "__main__".
 
-    argv = shlex.split(target)
-    sys.argv = argv
-    sys.path.insert(0, os.path.dirname(os.path.abspath(argv[0])))
+    compile() + exec() instead of runpy, which would preload importlib/pkgutil; compile()
+    on bytes honours the file's coding declaration itself.
+    """
+    path = os.path.abspath(argv[0])
+    sys.argv = list(argv)
+    sys.path.insert(0, os.path.dirname(path))
     meter.start("workload")
     try:
-        runpy.run_path(argv[0], run_name="__main__")
+        with open(path, "rb") as fh:
+            code = compile(fh.read(), path, "exec")
+        main = type(sys)("__main__")
+        main.__file__ = path
+        main.__builtins__ = __builtins__
+        saved = sys.modules.get("__main__")
+        sys.modules["__main__"] = main  # pickle/multiprocessing look things up here
+        try:
+            exec(code, main.__dict__)
+        finally:
+            if saved is not None:
+                sys.modules["__main__"] = saved
+            # The script's own globals die with the script (as with runpy / a real process);
+            # "retained" must only count what outlives it: caches, module state, leaks.
+            main.__dict__.clear()
     except SystemExit as exc:
         if exc.code not in (None, 0):
             meter.stop("failed", f"SystemExit({exc.code!r})")
             return
     except BaseException as exc:  # noqa: BLE001
-        meter.stop("error", _format_exc(exc))
+        meter.stop("error", exc)
         return
     meter.stop("passed")
 
 
-def _run_pytest(target: str, meter: Meter) -> int:
+def _run_pytest(argv: list[str], meter: Meter) -> int:
     import pytest
 
     class Plugin:
@@ -410,7 +432,7 @@ def _run_pytest(target: str, meter: Meter) -> int:
             elif report.skipped and self.outcome == "passed":
                 self.outcome = "skipped"
 
-    args = shlex.split(target) + pytest_extra_args()
+    args = list(argv) + pytest_extra_args()
     return int(pytest.main(args, plugins=[Plugin()]))
 
 
@@ -438,6 +460,8 @@ def pytest_extra_args() -> list[str]:
 
 
 def _format_exc(exc: BaseException) -> str:
+    import traceback
+
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
 
@@ -447,15 +471,16 @@ def run(spec: dict) -> dict:
     attributor = Attributor(root, exclude_files={__file__})
     meter = Meter(int(spec.get("nframe", 16)), attributor, spec.get("hints") or {},
                   attribute=spec.get("attribute", True),
-                  peak_mode=spec.get("peak_mode", "poll"))
+                  peak_mode=spec.get("peak_mode", "poll"),
+                  hint_fraction=spec.get("hint_fraction", HINT_FRACTION))
     kind, _, target = spec["workload"].partition(":")
     exit_code = 0
     if kind == "call":
         _run_call(target, meter)
     elif kind == "script":
-        _run_script(target, meter)
+        _run_script(spec["argv"], meter)
     elif kind == "pytest":
-        exit_code = _run_pytest(target, meter)
+        exit_code = _run_pytest(spec["argv"], meter)
     else:
         raise ValueError(f"unknown workload kind {kind!r}; use call:, script: or pytest:")
     for fid, info in attributor.functions.items():
@@ -475,13 +500,20 @@ def run(spec: dict) -> dict:
     }
 
 
+def read_spec(path: str) -> dict:
+    """The spec is a trusted Python literal written by memblame into a private temp dir."""
+    with open(path, encoding="utf-8") as fh:
+        return eval(fh.read(), {"__builtins__": {}})  # noqa: S307 - no json/ast import (see top)
+
+
 def main() -> None:
-    with open(sys.argv[1], encoding="utf-8") as fh:
-        spec = json.load(fh)
+    spec = read_spec(sys.argv[1])
     try:
         result = run(spec)
     except BaseException as exc:  # noqa: BLE001 - the parent needs a readable failure
         result = {"schema": SCHEMA, "fatal": _format_exc(exc)}
+    import json  # only now: tracing has finished
+
     with open(spec["out"], "w", encoding="utf-8") as fh:
         json.dump(result, fh)
 

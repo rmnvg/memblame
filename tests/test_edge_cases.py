@@ -219,3 +219,33 @@ def test_stale_worktree_from_killed_run_is_removed(tmp_path):
         assert (live / "wt").exists()
     finally:
         git.git(r.path, "worktree", "remove", "--force", str(live / "wt"), check=False)
+
+
+def test_runner_preloads_no_modules_the_workload_might_import(tmp_path):
+    """Modules the runner imports before tracing are 'free' for the workload, which hides
+    import-time memory (a real tomlkit commit added `import dataclasses` -> `inspect`)."""
+    probe = "import sys\nopen(sys.argv[1], 'w').write('\\n'.join(sorted(sys.modules)))\n"
+    (tmp_path / "probe.py").write_text(probe)
+    subprocess.run([sys.executable, "probe.py", "bare.txt"], cwd=tmp_path, check=True)
+    r = Repo(tmp_path / "repo")
+    r.commit({"a.py": ""}, "v1")
+    with session(r, f"script:{tmp_path / 'probe.py'} {tmp_path / 'runner.txt'}") as s:
+        s.result("HEAD")  # fast runs only: these produce the numbers (attribution may differ)
+    bare = set((tmp_path / "bare.txt").read_text().split())
+    seen = set((tmp_path / "runner.txt").read_text().split())
+    assert seen - bare <= {"__future__", "_tracemalloc", "gc"}, sorted(seen - bare)
+
+
+def test_script_globals_are_not_retained_but_module_caches_are(tmp_path):
+    """'retained' = memory that outlives the workload, not the script's own variables."""
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/cache.py": "CACHE = []\n",
+              "run.py": "from pkg import cache\n"
+                        "data = [bytes(100) for _ in range(50_000)]  # script global\n"
+                        "cache.CACHE.append([bytes(100) for _ in range(20_000)])  # leaks\n"},
+             "v1")
+    with session(r, "script:run.py") as s:
+        _, res = s.result("HEAD")
+    unit = res["units"]["workload"]
+    assert unit["peak"]["median"] > 6_000_000  # both lists were alive at the peak
+    assert 2_000_000 < unit["end"]["median"] < 4_000_000  # only the cached list outlives
