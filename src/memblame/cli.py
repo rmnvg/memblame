@@ -211,7 +211,7 @@ def _has_measurement_failure(out: dict) -> bool:
     def failed(result: dict) -> bool:
         units = result.get("units", {})
         return (result.get("valid") is False or not units
-                or any(u["outcome"] in ("failed", "error") for u in units.values()))
+                or any(u["outcome"] != "passed" for u in units.values()))
 
     if out["kind"] == "run":
         return failed(out["result"])

@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { buildArgs, parseProgress, runMemblame } from "../src/cli";
 import { chartSvg, esc, mb, niceStep, renderHtml } from "../src/render";
-import { findTests, isTestFile, locateScope, moduleName, pytestWorkload, quoteWorkloadArg, suggestWorkloads } from "../src/workload";
+import { findTests, isTestFile, locateScope, moduleName, pytestWorkload, quoteWorkloadArg, suggestWorkloads, tomlDefinesWorkload } from "../src/workload";
 
 const fixture = (name: string) =>
   JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "test", "fixtures", `${name}.json`), "utf8"));
@@ -72,6 +72,14 @@ test("parseProgress", () => {
 test("buildArgs", () => {
   const args = buildArgs({ workload: "pytest:t.py", runs: 2, importPaths: ["src"], python: "/py", repo: "/r" });
   assert.deepEqual(args, ["-C", "/r", "-w", "pytest:t.py", "--python", "/py", "--json", "--runs", "2", "--pythonpath", "src"]);
+  assert.deepEqual(buildArgs({ python: "/py", repo: "/r" }), ["-C", "/r", "--python", "/py", "--json"]);
+});
+
+test("repository workload configuration detection", () => {
+  assert.equal(tomlDefinesWorkload('workload = "call:pkg:run"\n', false), true);
+  assert.equal(tomlDefinesWorkload('[tool.memblame]\nruns = 2\nworkload = "pytest:tests"\n', true), true);
+  assert.equal(tomlDefinesWorkload('[project]\nworkload = "not memblame"\n', true), false);
+  assert.equal(tomlDefinesWorkload('[tool.memblame.other]\nworkload = "not direct"\n', true), false);
 });
 
 test("formatting and escaping", () => {

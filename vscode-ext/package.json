@@ -72,7 +72,7 @@
         "memblame.workload": {
           "type": "string",
           "default": "",
-          "markdownDescription": "What to run at each commit: `pytest:tests/test_big.py::test_load`, `script:bench/run.py --n 10` or `call:package.module:function`. A script path may be absolute (outside the repo), which keeps the workload identical across commits. Also readable from `[tool.memblame]` in pyproject.toml."
+          "markdownDescription": "What to run at each commit: `pytest:tests/test_big.py::test_load`, `script:bench/run.py --n 10` or `call:package.module:function`. A script path may be absolute (outside the repo), which keeps the workload identical across commits. Also read automatically from `memblame.toml` or `[tool.memblame]` in `pyproject.toml`."
         },
         "memblame.runs": {
           "type": "number",

@@ -68,6 +68,25 @@ def test_python_exception_is_not_a_successful_check(tmp_path, capsys, command):
     assert any("broken workload" in warning for warning in out["warnings"])
 
 
+@pytest.mark.parametrize("command", ["run", "diff", "range", "bisect"])
+def test_skipped_pytest_is_not_a_successful_check(tmp_path, capsys, command):
+    repo = Repo(tmp_path / "repo")
+    test = ("import pytest\n\ndef test_passed():\n    pass\n\n"
+            "def test_optional():\n    pytest.skip('not available')\n")
+    repo.commit({"tests/test_optional.py": test}, "initial")
+    repo.commit({"README.md": "docs\n"}, "docs")
+    args = {"run": ["HEAD"], "diff": ["HEAD~1", "HEAD"],
+            "range": ["HEAD~1..HEAD", "--all"],
+            "bisect": ["--good", "HEAD~1", "--unit",
+                       "tests/test_optional.py::test_passed"]}[command]
+    code = cli.main([command, *args, "-C", str(repo.path),
+                     "-w", "pytest:tests/test_optional.py",
+                     "--python", sys.executable, "--runs", "1", "--no-cache", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert any("workload skipped" in warning for warning in out["warnings"])
+
+
 def sample():
     summary = {"coverage": 1, "total": 100_000, "functions": [], "lines": []}
     return {"python": "3.12", "executable": sys.executable, "platform": sys.platform,

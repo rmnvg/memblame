@@ -31,14 +31,18 @@ export function parseProgress(line: string): Progress | undefined {
 }
 
 export function buildArgs(common: {
-  workload: string;
+  workload?: string;
   runs?: number;
   nframe?: number;
   importPaths?: string[];
   python: string;
   repo: string;
 }): string[] {
-  const args = ["-C", common.repo, "-w", common.workload, "--python", common.python, "--json"];
+  const args = ["-C", common.repo];
+  if (common.workload) {
+    args.push("-w", common.workload);
+  }
+  args.push("--python", common.python, "--json");
   if (common.runs) {
     args.push("--runs", String(common.runs));
   }

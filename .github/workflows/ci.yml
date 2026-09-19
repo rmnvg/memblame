@@ -20,6 +20,26 @@ jobs:
         env:
           PYTHONUTF8: "1"
 
+  package:
+    # Test the files users actually receive, including the test helpers in the sdist.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine pytest pytest-xdist pytest-cov pytest-randomly
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - run: |
+          mkdir -p /tmp/memblame-sdist
+          tar -xzf dist/memblame-*.tar.gz -C /tmp/memblame-sdist
+          cd /tmp/memblame-sdist/memblame-*
+          python -m pip install -e .
+          python -m pytest -q
+        env:
+          PYTHONUTF8: "1"
+
   extension:
     runs-on: ubuntu-latest
     defaults:

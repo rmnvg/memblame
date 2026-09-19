@@ -44,9 +44,10 @@ Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type **MemBlame**:
 2. Select your project's interpreter with the Python extension, or set `memblame.pythonPath`.
    MemBlame runs your code with it, so your dependencies must be installed there.
 3. Click **Memory vs HEAD** above a test, or run **MemBlame: Choose Workload…** and then any
-   MemBlame command from the Command Palette. The chosen workload is remembered per
-   workspace (nothing is written into your repository); the `memblame.workload` setting,
-   if set, takes precedence.
+   MemBlame command from the Command Palette. The chosen workload is remembered in VS Code's
+   per-workspace state; the `memblame.workload` setting, when present, wins. If neither exists,
+   MemBlame automatically uses `memblame.toml` or `[tool.memblame]` in `pyproject.toml` before
+   prompting. Analysis results are cached in `.memblame/`.
 
 Nothing needs to be installed with pip: the engine is bundled with the extension and uses
 only the Python standard library.
@@ -65,10 +66,12 @@ only the Python standard library.
 
 ## How it works and its limits
 
-Each commit is checked out into a temporary git worktree (your files are never touched) and
-measured with Python's `tracemalloc`: peak memory and memory still held after the run. The
-median of runs is compared against a noise band. Only commits around a real change get a
-slower attribution run that maps memory to functions and to the lines in `git diff`.
+Each committed revision is checked out into a temporary git worktree, so your current checkout
+is never switched. A `WORKTREE` analysis runs the workload in the current checkout, where that
+workload can still create or modify files; Python bytecode writes are disabled. Measurements
+use Python's `tracemalloc`: peak memory and memory still held after the run. The median of runs
+is compared against a noise band. Only commits around a real change get a slower attribution
+run that maps memory to functions and to the lines in `git diff`.
 
 - `tracemalloc` counts Python allocations and numpy arrays, but not native libraries that
   call `malloc` directly.
@@ -77,8 +80,9 @@ slower attribution run that maps memory to functions and to the lines in `git di
 - All commits run with your currently installed dependencies.
 - pytest runs in-process and in file order, without coverage, even if your pytest config
   uses pytest-xdist, pytest-randomly or pytest-cov.
-- A commit where the test fails, or that cannot be measured, is skipped rather than
-  reported as a memory change.
+- A commit where a test fails or skips, or that cannot be measured, makes the check
+  incomplete rather than reporting a successful memory check. Bisect can still skip broken
+  intermediate commits, but its endpoints must pass.
 - If imports resolve outside the checked-out commit (for example an editable install with
   a `src/` layout), MemBlame reports **invalid environment** instead of wrong numbers. Set
   `memblame.importPaths`.
