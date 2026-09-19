@@ -27,6 +27,10 @@ class MeasureError(RuntimeError):
     pass
 
 
+class SetupError(MeasureError):
+    """Wrong for every commit (e.g. pytest missing): stop, don't skip commit after commit."""
+
+
 @dataclass
 class Settings:
     workload: str
@@ -127,6 +131,8 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
             raise MeasureError(f"runner crashed (exit {proc.returncode}):\n{tail}")
         result = json.loads(out_path.read_text())
     result["output_tail"] = ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
+    if "setup_error" in result:
+        raise SetupError(result["setup_error"])
     if "fatal" in result:
         raise MeasureError(result["fatal"])
     if result.get("schema") != SCHEMA:

@@ -12,6 +12,7 @@ from .measure import (
     Cache,
     MeasureError,
     Settings,
+    SetupError,
     add_attribution,
     check_interpreter,
     find_python,
@@ -76,6 +77,8 @@ class Session:
             self.progress(f"{label}measuring {commit.short} {commit.subject[:50]!r}")
             try:
                 res = measure(self.python, root, self.settings, attribute=attribute)
+            except SetupError:
+                raise
             except MeasureError as exc:
                 # A commit that cannot be measured (crash, timeout) is skipped, not fatal:
                 # like `git bisect skip`. Not cached, so a retry measures it again.

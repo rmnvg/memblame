@@ -288,3 +288,15 @@ def test_relative_interpreter_paths_survive_the_temporary_checkout(tmp_path, cap
     monkeypatch.chdir(r.path)
     code, out, err = run_cli(capsys, "run", "HEAD", "--python", "./venvpy", "--no-cache")
     assert code == 0, err
+
+
+def test_missing_pytest_is_a_setup_error_not_a_skipped_commit(tmp_path, capsys):
+    """Found in CI: the interpreter had no pytest, so every commit was 'skipped'."""
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "pytest.py").write_text("raise ImportError(\"No module named 'pytest'\")\n")
+    r = Repo(tmp_path / "repo")
+    r.commit({"tests/test_a.py": "def test_a():\n    assert 1\n"}, "v1")
+    with pytest.raises(api.MeasureError, match="pytest is not installed"):
+        with session(r, "pytest:tests/test_a.py", extra_env={"PYTHONPATH": str(shadow)}) as s:
+            api.run(s, "HEAD")

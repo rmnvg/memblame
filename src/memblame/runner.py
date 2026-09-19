@@ -410,8 +410,16 @@ def _run_script(argv: list[str], meter: Meter) -> None:
     meter.stop("passed")
 
 
+class SetupProblem(Exception):
+    """The environment cannot run this workload at any commit (not a per-commit failure)."""
+
+
 def _run_pytest(argv: list[str], meter: Meter) -> int:
-    import pytest
+    try:
+        import pytest
+    except ImportError:
+        raise SetupProblem(f"pytest is not installed in {sys.executable}; install it there or "
+                           "pass --python with the interpreter your tests use") from None
 
     class Plugin:
         def __init__(self) -> None:
@@ -513,6 +521,8 @@ def main() -> None:
     spec = read_spec(sys.argv[1])
     try:
         result = run(spec)
+    except SetupProblem as exc:
+        result = {"schema": SCHEMA, "setup_error": str(exc)}
     except BaseException as exc:  # noqa: BLE001 - the parent needs a readable failure
         result = {"schema": SCHEMA, "fatal": _format_exc(exc)}
     import json  # only now: tracing has finished

@@ -10,8 +10,8 @@ jobs:
         python: ["3.9", "3.12", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e . pytest ruff pytest-xdist pytest-cov pytest-randomly
@@ -26,17 +26,17 @@ jobs:
       run:
         working-directory: vscode-ext
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
-      - uses: actions/setup-python@v5
+          node-version: 22
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: npm ci
       - run: npm test
       - run: npx vsce package --no-dependencies
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: vsix
           path: vscode-ext/*.vsix
@@ -45,13 +45,14 @@ jobs:
     # Launches a real VS Code (headless via xvfb) against a generated fixture repo.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
-      - uses: actions/setup-python@v5
+          node-version: 22
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - run: python -m pip install pytest  # the lens runs a pytest test in this interpreter
       - run: git config --global user.name ci && git config --global user.email ci@example.com
       - run: npm ci
         working-directory: vscode-ext

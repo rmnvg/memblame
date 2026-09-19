@@ -41,7 +41,8 @@ export async function run(): Promise<void> {
     const lens = lenses.find((l) => l.command?.title.includes("Memory vs HEAD"))!;
     await vscode.commands.executeCommand(lens.command!.command, ...(lens.command!.arguments ?? []));
     const r = api.lastResult();
-    assert.equal(r?.kind, "diff");
+    assert.equal(r?.kind, "diff", JSON.stringify(r));
+    assert.ok(r.valid !== false && r.units, `no measurements; warnings: ${JSON.stringify(r.warnings)}`);
     assert.equal(r.workload, "pytest:tests/test_app.py::test_pipeline");
     assert.deepEqual(r.units.map((u: any) => u.name), ["tests/test_app.py::test_pipeline"]);
     assert.equal(r.findings[0]?.verdict?.function, "shop/parse.py::load_rows");
