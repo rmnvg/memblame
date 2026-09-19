@@ -14,13 +14,14 @@ Working name: `memblame`. Change it any time.
 | 5 VS Code extension | done; VSIX builds (~400 KB) | 12 node tests + 7-step integration test in real VS Code 1.131 |
 | 6 Extras | not started | section 12 |
 
-Test suites: `pytest` (46 tests, ~95 s, order-independent under pytest-randomly),
+Test suites: `pytest` (69 tests, ~140 s, order-independent under pytest-randomly; 94 % line
+coverage including the runner subprocesses),
 `ruff check src tests`, `cd vscode-ext && npm test` (12), `npm run test:integration`
 (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
-CI (`.github/workflows/ci.yml`): Linux/macOS/Windows × Python 3.9/3.12/3.14 + extension build.
-Supported Pythons: 3.9–3.14 (full suite run locally on 3.9 and 3.12; unit + edge suites on
-3.10, 3.11, 3.13, 3.14). Windows has not been run yet; CI will be the first run.
+CI (`.github/workflows/ci.yml`): Linux/macOS/Windows × Python 3.9/3.12/3.14 (all green,
+including Windows), extension unit tests + VSIX build, and the real-VS Code integration test
+under xvfb on Linux. Supported Pythons: 3.9–3.14.
 
 ## 1. One-paragraph summary
 

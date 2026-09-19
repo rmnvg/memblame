@@ -56,6 +56,26 @@ def find_python(repo: Path, explicit: str | None = None) -> str:
     return sys.executable
 
 
+def check_interpreter(python: str) -> None:
+    """Fail fast (not per commit) if the project interpreter cannot run the runner."""
+    try:
+        proc = subprocess.run([python, "-c", "import sys; print(*sys.version_info[:2])"],
+                              capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MeasureError(f"cannot run project interpreter {python}: "
+                           f"{getattr(exc, 'strerror', None) or exc}. Pass --python with your "
+                           "project's interpreter.") from None
+    try:
+        version = tuple(int(x) for x in proc.stdout.split())
+    except ValueError:
+        version = ()
+    if proc.returncode != 0 or len(version) != 2:
+        raise MeasureError(f"{python} does not look like a Python interpreter: "
+                           f"{(proc.stderr or proc.stdout).strip()[-300:]}")
+    if version < (3, 9):
+        raise MeasureError(f"{python} is Python {version[0]}.{version[1]}; memblame needs 3.9+")
+
+
 def environment_fingerprint(python: str) -> str:
     """Hash of interpreter version + installed distributions (cache invalidation)."""
     code = (
@@ -63,7 +83,11 @@ def environment_fingerprint(python: str) -> str:
         "d = sorted(f\"{x.metadata['Name']}=={x.version}\" for x in m.distributions())\n"
         "print(json.dumps([sys.version, d]))"
     )
-    proc = subprocess.run([python, "-c", code], capture_output=True, text=True)
+    try:
+        proc = subprocess.run([python, "-c", code], capture_output=True, text=True)
+    except OSError as exc:
+        raise MeasureError(f"cannot run project interpreter {python}: {exc.strerror or exc}. "
+                           "Pass --python with your project's interpreter.") from None
     if proc.returncode != 0:
         raise MeasureError(f"cannot run project interpreter {python}: {proc.stderr.strip()}")
     return hashlib.sha256(proc.stdout.encode()).hexdigest()[:16]
@@ -95,6 +119,9 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
             )
         except subprocess.TimeoutExpired:
             raise MeasureError(f"workload timed out after {s.timeout:.0f}s") from None
+        except OSError as exc:
+            raise MeasureError(f"cannot run project interpreter {python}: "
+                               f"{exc.strerror or exc}") from None
         if not out_path.exists():
             tail = (proc.stderr or proc.stdout)[-3000:]
             raise MeasureError(f"runner crashed (exit {proc.returncode}):\n{tail}")

@@ -8,7 +8,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import blame, git
-from .measure import Cache, MeasureError, Settings, add_attribution, find_python, measure
+from .measure import (
+    Cache,
+    MeasureError,
+    Settings,
+    add_attribution,
+    check_interpreter,
+    find_python,
+    measure,
+)
 from .runner import SCHEMA
 
 Progress = Callable[[str], None]
@@ -26,6 +34,7 @@ class Session:
         self.repo = git.repo_root(repo)
         self.settings = settings
         self.python = find_python(self.repo, settings.python)
+        check_interpreter(self.python)
         self.cache = Cache(self.repo, self.python, settings, enabled=use_cache)
         self.progress = progress
         self.measured = 0  # fresh (uncached) measurements, for tests and bisect stats

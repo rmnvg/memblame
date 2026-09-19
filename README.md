@@ -58,18 +58,45 @@ Pick what to run with `-w` (or `workload` in `[tool.memblame]` in `pyproject.tom
 | `script:bench/run.py --n 10` | a script; the path may be absolute (outside the repo), which keeps the workload identical at every commit |
 | `call:mypkg.pipeline:main` | a function |
 
-Useful options: `--json` (stable schema 1, used by the extension), `--runs N`,
-`--nframe N` (traceback depth), `--pythonpath src`, `--python .venv/bin/python`,
-`--no-cache`. Exit code `3` means a significant memory increase was found, which is
-handy in CI.
+### Options
+
+| option | default | meaning |
+|---|---|---|
+| `-w, --workload` | from config | what to run (table above) |
+| `-C, --repo` | `.` | repository to analyse |
+| `--python` | active venv / conda env, else `.venv`/`venv` in the repo, else the current Python | interpreter with your project's dependencies (3.9+) |
+| `--pythonpath DIR` | `src` + `.` if `src/` exists, else `.` | where to import your project from; repeatable |
+| `--runs N` | `3` | maximum runs per commit (stops early once two runs agree) |
+| `--nframe N` | `16` | traceback depth for attribution; raise it if a verdict notes truncated stacks |
+| `--timeout S` | `900` | seconds per run; a commit that takes longer is skipped |
+| `--no-cache` | | ignore and don't write `.memblame/cache/` |
+| `--json` | | machine-readable output (`"schema": 1`), used by the VS Code extension |
+| `range --all` | | measure every commit instead of subdividing adaptively |
+| `bisect --good REV` / `--bad REV` | `--bad HEAD` | the range to search |
+| `bisect --threshold` | noise band | `200MB` (absolute), `+20MB` or `+10%` (relative to good) |
+| `bisect --unit NAME` / `--metric peak\|retained` | the one that grew most | what to track, e.g. a pytest node id |
+
+Exit codes: `0` no significant increase, `3` a significant memory increase was found (handy
+in CI), `1` error, `2` not a git repository.
+
+### Configuration
+
+These keys can live in `pyproject.toml` (or in a `memblame.toml` at the repo root, which
+wins). Command-line flags override them; a relative `python` path is relative to the repo root.
 
 ```toml
-# pyproject.toml
 [tool.memblame]
 workload = "pytest:tests/test_pipeline.py"
 runs = 3
+nframe = 16
 pythonpath = ["src"]
+python = ".venv/bin/python"
+timeout = 600
+threshold = "+10%"   # default for bisect
 ```
+
+Reading config needs Python 3.11+ (or `pip install tomli` on 3.9/3.10); otherwise memblame
+says so and uses the command line only.
 
 ## How it works
 

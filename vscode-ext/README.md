@@ -24,6 +24,20 @@ measures memory, and points at the function and the diff hunk responsible.
 
 ![Comparison report](https://raw.githubusercontent.com/rmnvg/memblame/main/vscode-ext/media/report-diff.png)
 
+## Commands
+
+Open the Command Palette (`Ctrl/Cmd+Shift+P`) and type **MemBlame**:
+
+| Command | What it does |
+|---|---|
+| **MemBlame: Compare Memory: Working Tree vs HEAD** | your uncommitted changes vs the last commit (also in the editor's right-click menu, and as the "Memory vs HEAD" lens above tests) |
+| **MemBlame: Compare Memory Between Two Commits…** | pick a base and a head commit (or the working tree) |
+| **MemBlame: Analyze Memory Over a Commit Range…** | timeline over `BASE..HEAD` |
+| **MemBlame: Find the Commit That Increased Memory (bisect)…** | pick the last good commit and an optional threshold |
+| **MemBlame: Choose Workload…** | which test, script or function to run |
+| **MemBlame: Show Last Report** | reopen the last report |
+| **MemBlame: Clear Annotations** | remove MemBlame CodeLens and inline notes |
+
 ## Getting started
 
 1. Open a Python project that is a git repository.

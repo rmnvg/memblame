@@ -40,3 +40,24 @@ jobs:
         with:
           name: vsix
           path: vscode-ext/*.vsix
+
+  extension-integration:
+    # Launches a real VS Code (headless via xvfb) against a generated fixture repo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: git config --global user.name ci && git config --global user.email ci@example.com
+      - run: npm ci
+        working-directory: vscode-ext
+      - run: npm run compile
+        working-directory: vscode-ext
+      - run: xvfb-run -a node out/test/integration/runTest.js
+        working-directory: vscode-ext
+        env:
+          MEMBLAME_TEST_PYTHON: python
