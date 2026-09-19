@@ -1,0 +1,307 @@
+{
+ "schema": 1,
+ "kind": "bisect",
+ "repo": "/private/tmp/claude-501/-Users-ramanjot-Desktop-memblame/b5e70793-ba4d-4f42-bde4-9c85de0cd1a4/scratchpad/fx",
+ "workload": "call:shop.app:run",
+ "python": "/Users/ramanjot/Desktop/memblame/.venv/bin/python",
+ "good": {
+  "sha": "da9eedfa0aa68dde23d84529b958620533383218",
+  "short": "da9eedf",
+  "author": "Asha Rao",
+  "date": "2026-01-01T12:00:00Z",
+  "subject": "initial pipeline"
+ },
+ "bad": {
+  "sha": "624d2515c64d2aec5da3368094f155d58d1fb0de",
+  "short": "624d251",
+  "author": "Asha Rao",
+  "date": "2026-01-06T12:00:00Z",
+  "subject": "document run()"
+ },
+ "candidates": 4,
+ "unit": "workload",
+ "metric": "peak",
+ "threshold": 39523625,
+ "status": "found",
+ "culprit": {
+  "sha": "326798baaadee05d056e3bad9d2a096f22e685b5",
+  "short": "326798b",
+  "author": "Rahul Mehta",
+  "date": "2026-01-05T12:00:00Z",
+  "subject": "include raw payload in rows"
+ },
+ "parent": {
+  "sha": "5e69fdb8604c527148a617f654407c508a93ea17",
+  "short": "5e69fdb",
+  "author": "Ben Ito",
+  "date": "2026-01-04T12:00:00Z",
+  "subject": "tweak app docstring"
+ },
+ "measurements": [
+  {
+   "commit": {
+    "sha": "da9eedfa0aa68dde23d84529b958620533383218",
+    "short": "da9eedf",
+    "author": "Asha Rao",
+    "date": "2026-01-01T12:00:00Z",
+    "subject": "initial pipeline"
+   },
+   "value": 29523625,
+   "bad": false
+  },
+  {
+   "commit": {
+    "sha": "bb7111865851358129f5da24f4e95d875aacaf00",
+    "short": "bb71118",
+    "author": "Ben Ito",
+    "date": "2026-01-03T12:00:00Z",
+    "subject": "add format_total helper"
+   },
+   "value": 29524497,
+   "bad": false
+  },
+  {
+   "commit": {
+    "sha": "5e69fdb8604c527148a617f654407c508a93ea17",
+    "short": "5e69fdb",
+    "author": "Ben Ito",
+    "date": "2026-01-04T12:00:00Z",
+    "subject": "tweak app docstring"
+   },
+   "value": 29524502,
+   "bad": false
+  },
+  {
+   "commit": {
+    "sha": "326798baaadee05d056e3bad9d2a096f22e685b5",
+    "short": "326798b",
+    "author": "Rahul Mehta",
+    "date": "2026-01-05T12:00:00Z",
+    "subject": "include raw payload in rows"
+   },
+   "value": 57724566,
+   "bad": true
+  },
+  {
+   "commit": {
+    "sha": "624d2515c64d2aec5da3368094f155d58d1fb0de",
+    "short": "624d251",
+    "author": "Asha Rao",
+    "date": "2026-01-06T12:00:00Z",
+    "subject": "document run()"
+   },
+   "value": 57724566,
+   "bad": true
+  }
+ ],
+ "steps": 3,
+ "monotonic": true,
+ "units": [
+  {
+   "name": "workload",
+   "status": "compared",
+   "outcome": {
+    "base": "passed",
+    "head": "passed"
+   },
+   "metrics": [
+    {
+     "metric": "peak",
+     "base": 29524502,
+     "head": 57724566,
+     "delta": 28200064,
+     "band": 1154491,
+     "significant": true,
+     "direction": "up",
+     "functions": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "file": "shop/parse.py",
+       "qualname": "load_rows",
+       "line": 4,
+       "cum_delta": 28599045,
+       "self_delta": 28599045,
+       "base_cum": 28747882,
+       "head_cum": 57346927,
+       "changed": true,
+       "hunks": [
+        {
+         "file": "shop/parse.py",
+         "old_start": 7,
+         "old_len": 1,
+         "new_start": 7,
+         "new_len": 2,
+         "header": "@@ -7,1 +7,2 @@"
+        }
+       ]
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "file": "shop/report.py",
+       "qualname": "summarize",
+       "line": 5,
+       "cum_delta": 28599045,
+       "self_delta": 0,
+       "base_cum": 28748138,
+       "head_cum": 57347183,
+       "changed": false,
+       "hunks": []
+      },
+      {
+       "id": "shop/app.py::run",
+       "file": "shop/app.py",
+       "qualname": "run",
+       "line": 7,
+       "cum_delta": 28599045,
+       "self_delta": 0,
+       "base_cum": 28748770,
+       "head_cum": 57347815,
+       "changed": false,
+       "hunks": []
+      }
+     ],
+     "coverage": {
+      "base": 0.9888,
+      "head": 0.9937
+     },
+     "verdict": {
+      "kind": "direct",
+      "function": "shop/parse.py::load_rows",
+      "file": "shop/parse.py",
+      "qualname": "load_rows",
+      "line": 4,
+      "cum_delta": 28599045,
+      "self_delta": 28599045,
+      "hunks": [
+       {
+        "file": "shop/parse.py",
+        "old_start": 7,
+        "old_len": 1,
+        "new_start": 7,
+        "new_len": 2,
+        "header": "@@ -7,1 +7,2 @@"
+       }
+      ],
+      "hot_lines": [
+       {
+        "file": "shop/parse.py",
+        "line": 8,
+        "bytes": 57346343
+       }
+      ],
+      "allocated_at": []
+     }
+    },
+    {
+     "metric": "retained",
+     "base": 12060,
+     "head": 12100,
+     "delta": 40,
+     "band": 65536,
+     "significant": false,
+     "direction": "up",
+     "functions": [],
+     "coverage": {
+      "base": 1.0073,
+      "head": 1.0073
+     },
+     "verdict": {
+      "kind": "none"
+     }
+    }
+   ]
+  }
+ ],
+ "changed_functions": [
+  {
+   "id": "shop/parse.py::load_rows",
+   "file": "shop/parse.py",
+   "qualname": "load_rows",
+   "line": 4
+  }
+ ],
+ "findings": [
+  {
+   "unit": "workload",
+   "metric": "peak",
+   "delta": 28200064,
+   "base": 29524502,
+   "head": 57724566,
+   "band": 1154491,
+   "verdict": {
+    "kind": "direct",
+    "function": "shop/parse.py::load_rows",
+    "file": "shop/parse.py",
+    "qualname": "load_rows",
+    "line": 4,
+    "cum_delta": 28599045,
+    "self_delta": 28599045,
+    "hunks": [
+     {
+      "file": "shop/parse.py",
+      "old_start": 7,
+      "old_len": 1,
+      "new_start": 7,
+      "new_len": 2,
+      "header": "@@ -7,1 +7,2 @@"
+     }
+    ],
+    "hot_lines": [
+     {
+      "file": "shop/parse.py",
+      "line": 8,
+      "bytes": 57346343
+     }
+    ],
+    "allocated_at": []
+   },
+   "functions": [
+    {
+     "id": "shop/parse.py::load_rows",
+     "file": "shop/parse.py",
+     "qualname": "load_rows",
+     "line": 4,
+     "cum_delta": 28599045,
+     "self_delta": 28599045,
+     "base_cum": 28747882,
+     "head_cum": 57346927,
+     "changed": true,
+     "hunks": [
+      {
+       "file": "shop/parse.py",
+       "old_start": 7,
+       "old_len": 1,
+       "new_start": 7,
+       "new_len": 2,
+       "header": "@@ -7,1 +7,2 @@"
+      }
+     ]
+    },
+    {
+     "id": "shop/report.py::summarize",
+     "file": "shop/report.py",
+     "qualname": "summarize",
+     "line": 5,
+     "cum_delta": 28599045,
+     "self_delta": 0,
+     "base_cum": 28748138,
+     "head_cum": 57347183,
+     "changed": false,
+     "hunks": []
+    },
+    {
+     "id": "shop/app.py::run",
+     "file": "shop/app.py",
+     "qualname": "run",
+     "line": 7,
+     "cum_delta": 28599045,
+     "self_delta": 0,
+     "base_cum": 28748770,
+     "head_cum": 57347815,
+     "changed": false,
+     "hunks": []
+    }
+   ]
+  }
+ ]
+}

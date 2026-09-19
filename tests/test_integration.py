@@ -80,12 +80,26 @@ def test_range_finds_exactly_the_planted_commits_and_caches(planted):
                        (planted.commits["retention"], "retained")}
     assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
     assert len(first["points"]) == len(planted.order)
+    assert first["mode"] == "adaptive" and first["measured"] < len(planted.order)
+
+
+def test_exhaustive_range_agrees_with_adaptive(planted):
+    base, head = planted.commits["initial"], planted.commits["changelog"]
+    with session(planted) as s:
+        adaptive = api.range_(s, base, head)
+        full = api.range_(s, base, head, exhaustive=True)
+    assert full["measured"] == len(planted.order)
+    key = lambda out: sorted((f["commit"], f["metric"], f["verdict"]["function"])  # noqa: E731
+                             for f in out["findings"])
+    assert key(full) == key(adaptive)
 
 
 def test_clean_history_has_no_findings(clean):
     with session(clean, runs=3) as s:
         out = api.range_(s, clean.commits["initial"], clean.commits["changelog"])
     assert out["findings"] == []
+    assert out["measured"] == 2  # both ends equal -> nothing in between needs measuring
+    assert s.measured == 2
 
 
 def test_noise_same_commit_stays_inside_band(clean):

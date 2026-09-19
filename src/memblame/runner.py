@@ -12,6 +12,7 @@ Spec (JSON):
     pythonpath list of root-relative dirs to put first on sys.path (default: auto)
     nframe     tracemalloc traceback depth
     hints      {unit name: peak bytes from a previous run} -> enables peak attribution
+    attribute  false -> numbers only (no snapshots), for cheap timing runs
     out        path to write the result JSON to
 """
 
@@ -211,8 +212,10 @@ def _grouped_traces(snapshot: tracemalloc.Snapshot):
 class Meter:
     """Measures one unit (a whole call/script, or one pytest test)."""
 
-    def __init__(self, nframe: int, attributor: Attributor, hints: dict[str, int]):
+    def __init__(self, nframe: int, attributor: Attributor, hints: dict[str, int],
+                 attribute: bool = True):
         self.nframe = nframe
+        self.attribute = attribute
         self.attr = attributor
         self.hints = hints
         self.units: list[dict] = []
@@ -249,7 +252,7 @@ class Meter:
         peak = tracemalloc.get_traced_memory()[1]
         gc.collect()
         end_bytes = tracemalloc.get_traced_memory()[0]
-        end_snapshot = tracemalloc.take_snapshot()
+        end_snapshot = tracemalloc.take_snapshot() if self.attribute else None
         tracemalloc.stop()  # before summarizing: analysis under tracing is ~20x slower
         unit = {
             "name": self._name,
@@ -257,7 +260,7 @@ class Meter:
             "peak_bytes": peak,
             "end_bytes": end_bytes,
             "duration_s": round(duration, 4),
-            "retained": self.attr.summarize(end_snapshot, end_bytes),
+            "retained": self.attr.summarize(end_snapshot, end_bytes) if end_snapshot else None,
             "at_peak": self.attr.summarize(self._snapshot, peak) if self._snapshot else None,
         }
         if error:
@@ -377,7 +380,8 @@ def run(spec: dict) -> dict:
     root = os.path.realpath(spec["root"])
     dirs = _setup_paths(root, spec.get("pythonpath"))
     attributor = Attributor(root, exclude_files={__file__})
-    meter = Meter(int(spec.get("nframe", 32)), attributor, spec.get("hints") or {})
+    meter = Meter(int(spec.get("nframe", 16)), attributor, spec.get("hints") or {},
+                  attribute=spec.get("attribute", True))
     kind, _, target = spec["workload"].partition(":")
     exit_code = 0
     if kind == "call":

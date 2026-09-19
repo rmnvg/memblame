@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import blame, git
-from .measure import Cache, Settings, find_python, measure
+from .measure import Cache, Settings, add_attribution, find_python, measure
 from .runner import SCHEMA
 
 Progress = Callable[[str], None]
@@ -30,6 +30,8 @@ class Session:
         self.progress = progress
         self.measured = 0  # fresh (uncached) measurements, for tests and bisect stats
         self._pool = git.WorktreePool(self.repo)
+        self._memo: dict[str, dict] = {}
+        self._commits: dict[str, git.Commit] = {}
 
     def close(self) -> None:
         self._pool.close()
@@ -44,58 +46,139 @@ class Session:
         return {"schema": SCHEMA, "kind": kind, "repo": str(self.repo),
                 "workload": self.settings.workload, "python": self.python}
 
-    def result(self, rev: str, label: str = "") -> tuple[git.Commit, dict]:
+    def result(self, rev: str, label: str = "", attribute: bool = False,
+               ) -> tuple[git.Commit, dict]:
+        """Measurement for a revision: cache, then memo, then a fresh measurement.
+
+        attribute=False returns numbers only; attribution is added lazily (and cached) only
+        for the commits where a significant change needs explaining.
+        """
         sha = git.resolve(self.repo, rev)
-        commit = git.commit_info(self.repo, sha)
-        cached = self.cache.get(sha)
-        if cached is not None:
-            self.progress(f"{label}{commit.short} cached")
-            return commit, cached
-        self.progress(f"{label}measuring {commit.short} {commit.subject[:50]!r}")
+        commit = self._commits.get(sha) or git.commit_info(self.repo, sha)
+        self._commits[sha] = commit
+        res = self._memo.get(sha) or self.cache.get(sha)
+        if res is not None and (res.get("attributed") or not attribute or not res["valid"]):
+            if sha not in self._memo:
+                self.progress(f"{label}{commit.short} cached")
+            self._memo[sha] = res
+            return commit, res
         root = self._pool.checkout(sha)
-        res = measure(self.python, root, self.settings)
-        self.measured += 1
+        if res is None:
+            self.progress(f"{label}measuring {commit.short} {commit.subject[:50]!r}")
+            res = measure(self.python, root, self.settings, attribute=attribute)
+            self.measured += 1
+        else:
+            self.progress(f"{label}attributing {commit.short} {commit.subject[:50]!r}")
+            add_attribution(self.python, root, self.settings, res)
+        self._memo[sha] = res
         if res["valid"]:
             self.cache.put(sha, res)
         return commit, res
 
 
 def run(session: Session, rev: str = git.WORKTREE) -> dict:
-    commit, res = session.result(rev)
+    commit, res = session.result(rev, attribute=True)
     return {**session.header("run"), "commit": commit.to_json(), "result": res}
 
 
+def _compare(session: Session, a: tuple[git.Commit, dict], b: tuple[git.Commit, dict],
+             ) -> tuple[dict, tuple[git.Commit, dict], tuple[git.Commit, dict]]:
+    """Compare two measurements, attributing both sides only if something changed."""
+    cmp = blame.compare(session.repo, a[1], b[1], a[0].sha, b[0].sha)
+    if cmp["findings"] and not (a[1]["attributed"] and b[1]["attributed"]):
+        a = session.result(a[0].sha, "", attribute=True)
+        b = session.result(b[0].sha, "", attribute=True)
+        cmp = blame.compare(session.repo, a[1], b[1], a[0].sha, b[0].sha)
+    return cmp, a, b
+
+
 def diff(session: Session, base: str, head: str = git.WORKTREE) -> dict:
-    a_commit, a = session.result(base, "[1/2] ")
-    b_commit, b = session.result(head, "[2/2] ")
-    out = {**session.header("diff"), "base": a_commit.to_json(), "head": b_commit.to_json()}
-    out["valid"] = a["valid"] and b["valid"]
-    out["warnings"] = _warnings(a_commit, a) + _warnings(b_commit, b)
+    a = session.result(base, "[1/2] ")
+    b = session.result(head, "[2/2] ")
+    out = {**session.header("diff"), "base": a[0].to_json(), "head": b[0].to_json()}
+    out["valid"] = a[1]["valid"] and b[1]["valid"]
     if out["valid"]:
-        out.update(blame.compare(session.repo, a, b, a_commit.sha, b_commit.sha))
-        out["results"] = {"base": _brief(a), "head": _brief(b)}
+        cmp, a, b = _compare(session, a, b)
+        out.update(cmp)
+        out["results"] = {"base": _brief(a[1]), "head": _brief(b[1])}
+    out["warnings"] = _dedupe(_warnings(*a) + _warnings(*b))
     return out
 
 
-def range_(session: Session, base: str, head: str) -> dict:
+def _differs(a: dict, b: dict) -> bool:
+    """Is there any significant difference (or a change in validity/outcome) between two?"""
+    if a["valid"] != b["valid"] or set(a["units"]) != set(b["units"]):
+        return True
+    for name, ua in a["units"].items():
+        ub = b["units"][name]
+        if ua["outcome"] != ub["outcome"]:
+            return True
+        for stat_key, _ in blame.METRICS.values():
+            delta = ub[stat_key]["median"] - ua[stat_key]["median"]
+            if abs(delta) > blame.noise_band(ua[stat_key], ub[stat_key]):
+                return True
+    return False
+
+
+def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> dict:
+    """Memory over a first-parent commit range.
+
+    Adaptive by default: measure both ends and only subdivide segments whose ends differ
+    significantly (about log2(N) measurements per change instead of N). A change that is
+    later exactly undone inside one unsplit segment is missed; use exhaustive=True to
+    measure every commit.
+    """
     shas = git.first_parent_range(session.repo, base, head)
-    points, steps, warnings = [], [], []
-    prev: tuple[git.Commit, dict] | None = None
-    for i, sha in enumerate(shas, 1):
-        commit, res = session.result(sha, f"[{i}/{len(shas)}] ")
-        warnings += _warnings(commit, res)
-        points.append({"commit": commit.to_json(), "valid": res["valid"], **_brief(res)})
-        if prev is not None and prev[1]["valid"] and res["valid"]:
-            cmp = blame.compare(session.repo, prev[1], res, prev[0].sha, commit.sha)
-            steps.append({"base": prev[0].sha, "head": commit.sha,
-                          "findings": cmp["findings"]})
-        prev = (commit, res)
+    n = len(shas)
+    measured: dict[int, tuple[git.Commit, dict]] = {}
+
+    def get(i: int) -> tuple[git.Commit, dict]:
+        if i not in measured:
+            measured[i] = session.result(shas[i], f"[{len(measured) + 1}/{n}] ")
+        return measured[i]
+
+    if exhaustive:
+        for i in range(n):
+            get(i)
+    else:
+        get(0)
+        get(n - 1)
+        todo = [(0, n - 1)]
+        while todo:
+            lo, hi = todo.pop()
+            if hi - lo > 1 and _differs(get(lo)[1], get(hi)[1]):
+                mid = (lo + hi) // 2
+                get(mid)
+                todo += [(mid, hi), (lo, mid)]
+
+    steps = []
+    order = sorted(measured)
+    for lo, hi in zip(order, order[1:], strict=False):
+        a, b = measured[lo], measured[hi]
+        if not (a[1]["valid"] and b[1]["valid"]):
+            continue
+        cmp, a, b = _compare(session, a, b)
+        measured[lo], measured[hi] = a, b
+        steps.append({"base": a[0].sha, "head": b[0].sha, "commits": hi - lo,
+                      "findings": cmp["findings"]})
+    commits = git.commit_infos(session.repo, shas)
+    points, warnings = [], []
+    for i, commit in enumerate(commits):
+        if i in measured:
+            res = measured[i][1]
+            warnings += _warnings(commit, res)
+            points.append({"commit": commit.to_json(), "measured": True, "valid": res["valid"],
+                           **_brief(res)})
+        else:
+            points.append({"commit": commit.to_json(), "measured": False, "valid": True,
+                           "units": {}})
     findings = [
         {**f, "commit": s["head"], "parent": s["base"]} for s in steps for f in s["findings"]
     ]
     findings.sort(key=lambda f: -abs(f["delta"]))
-    return {**session.header("range"), "points": points, "steps": steps,
-            "findings": findings, "warnings": warnings}
+    return {**session.header("range"), "mode": "exhaustive" if exhaustive else "adaptive",
+            "measured": len(measured), "points": points, "steps": steps,
+            "findings": findings, "warnings": _dedupe(warnings)}
 
 
 _SIZE_RE = re.compile(r"^\s*([+]?)\s*([\d.]+)\s*(%|[kmg]i?b|b)?\s*$", re.IGNORECASE)
@@ -180,7 +263,7 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
               "bad": value(measured[i][1]) > limit} for i in sorted(measured)]
     flags = [t["bad"] for t in trail]
     monotonic = flags == sorted(flags)  # all good commits come before all bad ones
-    cmp = blame.compare(session.repo, parent[1], culprit[1], parent[0].sha, culprit[0].sha)
+    cmp, parent, culprit = _compare(session, parent, culprit)
     out.update(
         status="found", culprit=culprit[0].to_json(), parent=parent[0].to_json(),
         measurements=trail, steps=len(measured) - 2, monotonic=monotonic, **cmp,
@@ -207,6 +290,18 @@ def _top(unit: dict) -> list[dict]:
     if not summary:
         return []
     return sorted(summary["functions"], key=lambda f: -f["self"])[:5]
+
+
+def _dedupe(warnings: list[str]) -> list[str]:
+    """Collapse 'sha: message' lines repeated across commits into one line."""
+    by_msg: dict[str, list[str]] = {}
+    for w in warnings:
+        short, sep, msg = w.partition(": ")
+        by_msg.setdefault(msg if sep else w, []).append(short)
+    out = []
+    for msg, shorts in by_msg.items():
+        out.append(f"{shorts[0]}: {msg}" if len(shorts) == 1 else f"{msg} ({len(shorts)} commits)")
+    return out
 
 
 def _warnings(commit: git.Commit, res: dict) -> list[str]:

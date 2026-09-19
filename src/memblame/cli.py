@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 from pathlib import Path
 
@@ -64,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = sub.add_parser("range", parents=[common], help="timeline over a commit range")
     g.add_argument("range", help="BASE..HEAD, e.g. main~20..main")
+    g.add_argument("--all", action="store_true",
+                   help="measure every commit (default: adaptive, only subdivide where "
+                        "memory changed)")
 
     b = sub.add_parser("bisect", parents=[common], help="find the commit that crossed a limit")
     b.add_argument("--good", required=True)
@@ -94,8 +98,17 @@ def settings_from(args: argparse.Namespace, config: dict) -> Settings:
     )
 
 
+def _exit_on_sigterm() -> None:
+    """Turn SIGTERM (e.g. an editor cancelling us) into SystemExit so worktrees get removed."""
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    except ValueError:  # not in the main thread (embedded use)
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _exit_on_sigterm()
     try:
         repo = git.repo_root(Path(args.repo))
     except git.GitError:
@@ -113,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
                 base, sep, head = args.range.partition("..")
                 if not sep:
                     raise ValueError("range must look like BASE..HEAD")
-                out, fmt = api.range_(s, base, head or "HEAD"), report.format_range
+                out = api.range_(s, base, head or "HEAD", exhaustive=args.all)
+                fmt = report.format_range
             else:
                 threshold = args.threshold or config.get("threshold")
                 out = api.bisect(s, args.good, args.bad, threshold, args.unit, args.metric)

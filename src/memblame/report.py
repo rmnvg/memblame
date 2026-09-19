@@ -94,13 +94,23 @@ def format_range(d: dict) -> str:
     interesting = [u for u in units if any(k[1] == u for k in flagged)] or units[:1]
     out = []
     for unit in interesting[:3]:
-        out.append(f"{unit}  (median of runs; ▲ = significant change)")
+        mode = (f"; measured {d.get('measured', len(points))} of {len(points)} commits"
+                if d.get("mode") == "adaptive" else "")
+        out.append(f"{unit}  (median of runs; ▲ = significant change{mode})")
         out.append(f"  {'commit':9} {'peak':>9} {'Δpeak':>10}   {'retained':>9} {'Δret':>10}  "
                    "author / subject")
         prev = None
+        skipped: list[dict] = []
         for p in points:
             u = p.get("units", {}).get(unit)
             c = p["commit"]
+            if not p.get("measured", True):
+                skipped.append(c)
+                continue
+            if skipped:
+                out.append(f"  {'':9} {'·':>9}   {len(skipped)} commit(s) not measured: no "
+                           "significant change across them")
+                skipped = []
             if not u:
                 out.append(f"  {c['short']:9} {'-':>9}")
                 continue

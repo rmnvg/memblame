@@ -51,13 +51,30 @@ def working_tree_commit() -> Commit:
     return Commit(WORKTREE, "working", "", "", "uncommitted changes")
 
 
+_FMT = "%H%x00%h%x00%an%x00%aI%x00%s%x1e"
+
+
+def _parse_commits(out: str) -> list[Commit]:
+    commits = []
+    for rec in out.split("\x1e"):
+        rec = rec.strip("\n")
+        if rec:
+            sha, short, author, date, subject = rec.split("\x00", 4)
+            commits.append(Commit(sha, short, author, date, subject))
+    return commits
+
+
 def commit_info(repo: Path, rev: str) -> Commit:
     if rev == WORKTREE:
         return working_tree_commit()
-    fmt = "%H%x00%h%x00%an%x00%aI%x00%s"
-    out = git(repo, "show", "-s", f"--format={fmt}", f"{rev}^{{commit}}", "--")
-    sha, short, author, date, subject = out.rstrip("\n").split("\x00", 4)
-    return Commit(sha, short, author, date, subject)
+    return _parse_commits(git(repo, "show", "-s", f"--format={_FMT}", f"{rev}^{{commit}}", "--"))[0]
+
+
+def commit_infos(repo: Path, shas: list[str]) -> list[Commit]:
+    """Commit metadata for many SHAs with one git call (same order as `shas`)."""
+    by_sha = {c.sha: c for c in _parse_commits(
+        git(repo, "show", "-s", "--no-walk=unsorted", f"--format={_FMT}", *shas, "--"))}
+    return [by_sha[s] for s in shas]
 
 
 def resolve(repo: Path, rev: str) -> str:

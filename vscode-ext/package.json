@@ -1,0 +1,92 @@
+{
+  "name": "memblame",
+  "displayName": "MemBlame: git blame for memory",
+  "description": "Find the commit and the function that made your Python code use more memory. Compares memory across git commits and maps growth to the lines that changed.",
+  "version": "0.1.0",
+  "publisher": "memblame",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Debuggers", "Testing", "Other"],
+  "keywords": ["python", "memory", "profiler", "tracemalloc", "regression", "git", "bisect", "pytest"],
+  "activationEvents": ["onLanguage:python"],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "memblame.compareWorkingTree", "title": "Compare Memory: Working Tree vs HEAD", "category": "MemBlame" },
+      { "command": "memblame.compareCommits", "title": "Compare Memory Between Two Commits…", "category": "MemBlame" },
+      { "command": "memblame.analyzeRange", "title": "Analyze Memory Over a Commit Range…", "category": "MemBlame" },
+      { "command": "memblame.findRegression", "title": "Find the Commit That Increased Memory (bisect)…", "category": "MemBlame" },
+      { "command": "memblame.setWorkload", "title": "Choose Workload…", "category": "MemBlame" },
+      { "command": "memblame.showLastReport", "title": "Show Last Report", "category": "MemBlame" },
+      { "command": "memblame.clearAnnotations", "title": "Clear Annotations", "category": "MemBlame" }
+    ],
+    "configuration": {
+      "title": "MemBlame",
+      "properties": {
+        "memblame.workload": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "What to run at each commit: `pytest:tests/test_big.py::test_load`, `script:bench/run.py --n 10` or `call:package.module:function`. A script path may be absolute (outside the repo), which keeps the workload identical across commits. Also readable from `[tool.memblame]` in pyproject.toml."
+        },
+        "memblame.runs": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Measured runs per commit (median is reported)."
+        },
+        "memblame.nframe": {
+          "type": "number",
+          "default": 16,
+          "description": "Traceback depth used for attribution. Increase if the report warns about truncated stacks."
+        },
+        "memblame.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Interpreter with your project's dependencies. Empty: use the interpreter selected in the Python extension."
+        },
+        "memblame.importPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "markdownDescription": "Directories (relative to the repo) to import your project from, e.g. `src`. Empty: auto-detect."
+        },
+        "memblame.defaultRange": {
+          "type": "string",
+          "default": "HEAD~20..HEAD",
+          "description": "Default commit range for 'Analyze Memory Over a Commit Range'."
+        },
+        "memblame.testCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a 'Memory vs HEAD' CodeLens above pytest test functions."
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        { "command": "memblame.compareWorkingTree", "when": "editorLangId == python", "group": "z_memblame" }
+      ]
+    }
+  },
+  "scripts": {
+    "bundle-python": "node scripts/bundle-python.js",
+    "compile": "npm run bundle-python && tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run compile && node --test out/test/extension.test.js",
+    "package": "npm run compile && vsce package --no-dependencies",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/memblame"
+  }
+}

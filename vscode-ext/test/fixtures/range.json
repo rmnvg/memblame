@@ -1,0 +1,1013 @@
+{
+ "schema": 1,
+ "kind": "range",
+ "repo": "/private/tmp/claude-501/-Users-ramanjot-Desktop-memblame/b5e70793-ba4d-4f42-bde4-9c85de0cd1a4/scratchpad/fx",
+ "workload": "call:shop.app:run",
+ "python": "/Users/ramanjot/Desktop/memblame/.venv/bin/python",
+ "points": [
+  {
+   "commit": {
+    "sha": "da9eedfa0aa68dde23d84529b958620533383218",
+    "short": "da9eedf",
+    "author": "Asha Rao",
+    "date": "2026-01-01T12:00:00Z",
+    "subject": "initial pipeline"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 29523625,
+      "min": 29523625,
+      "max": 29527011,
+      "samples": [
+       29527011,
+       29523625,
+       29523625
+      ]
+     },
+     "end": {
+      "median": 11199,
+      "min": 11199,
+      "max": 11529,
+      "samples": [
+       11529,
+       11199,
+       11199
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 28747742,
+       "cumulative": 28747742
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 2776,
+       "cumulative": 4906
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1810,
+       "cumulative": 1970
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 28748630
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 416,
+       "cumulative": 28747998
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "0365968c76e0cbfa5adc638455933c9c3d5b0362",
+    "short": "0365968",
+    "author": "Asha Rao",
+    "date": "2026-01-02T12:00:00Z",
+    "subject": "add README"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 29523625,
+      "min": 29523625,
+      "max": 29527011,
+      "samples": [
+       29527011,
+       29523625,
+       29523625
+      ]
+     },
+     "end": {
+      "median": 11199,
+      "min": 11199,
+      "max": 11529,
+      "samples": [
+       11529,
+       11199,
+       11199
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 28747742,
+       "cumulative": 28747742
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 2776,
+       "cumulative": 4906
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1810,
+       "cumulative": 1970
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 28748630
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 416,
+       "cumulative": 28747998
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "bb7111865851358129f5da24f4e95d875aacaf00",
+    "short": "bb71118",
+    "author": "Ben Ito",
+    "date": "2026-01-03T12:00:00Z",
+    "subject": "add format_total helper"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 29524497,
+      "min": 29524497,
+      "max": 29528202,
+      "samples": [
+       29528202,
+       29524497,
+       29524497
+      ]
+     },
+     "end": {
+      "median": 12055,
+      "min": 12055,
+      "max": 12464,
+      "samples": [
+       12464,
+       12055,
+       12055
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 28747882,
+       "cumulative": 28747882
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3072,
+       "cumulative": 5762
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1810,
+       "cumulative": 1970
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 28748770
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 416,
+       "cumulative": 28748138
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "5e69fdb8604c527148a617f654407c508a93ea17",
+    "short": "5e69fdb",
+    "author": "Ben Ito",
+    "date": "2026-01-04T12:00:00Z",
+    "subject": "tweak app docstring"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 29524502,
+      "min": 29524502,
+      "max": 29528207,
+      "samples": [
+       29528207,
+       29524502,
+       29524502
+      ]
+     },
+     "end": {
+      "median": 12060,
+      "min": 12060,
+      "max": 12469,
+      "samples": [
+       12469,
+       12060,
+       12060
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 28747882,
+       "cumulative": 28747882
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3072,
+       "cumulative": 5762
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1810,
+       "cumulative": 1970
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 28748770
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 416,
+       "cumulative": 28748138
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "326798baaadee05d056e3bad9d2a096f22e685b5",
+    "short": "326798b",
+    "author": "Rahul Mehta",
+    "date": "2026-01-05T12:00:00Z",
+    "subject": "include raw payload in rows"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 57724566,
+      "min": 57724566,
+      "max": 57729627,
+      "samples": [
+       57729627,
+       57724566,
+       57724566
+      ]
+     },
+     "end": {
+      "median": 12100,
+      "min": 12100,
+      "max": 12529,
+      "samples": [
+       12529,
+       12100,
+       12100
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 57346927,
+       "cumulative": 57346927
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3072,
+       "cumulative": 5802
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1850,
+       "cumulative": 2010
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 57347815
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 416,
+       "cumulative": 57347183
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "624d2515c64d2aec5da3368094f155d58d1fb0de",
+    "short": "624d251",
+    "author": "Asha Rao",
+    "date": "2026-01-06T12:00:00Z",
+    "subject": "document run()"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 57724566,
+      "min": 57724566,
+      "max": 57729627,
+      "samples": [
+       57729627,
+       57724566,
+       57724566
+      ]
+     },
+     "end": {
+      "median": 12100,
+      "min": 12100,
+      "max": 12529,
+      "samples": [
+       12529,
+       12100,
+       12100
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 57346927,
+       "cumulative": 57346927
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3072,
+       "cumulative": 5802
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1850,
+       "cumulative": 2010
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 57347815
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 416,
+       "cumulative": 57347183
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "7427306cc69e7c358f1b50ab64a9916ae958ac8d",
+    "short": "7427306",
+    "author": "Chen Wu",
+    "date": "2026-01-07T12:00:00Z",
+    "subject": "cache summarize results"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 57724888,
+      "min": 57724888,
+      "max": 57730045,
+      "samples": [
+       57730045,
+       57724888,
+       57724888
+      ]
+     },
+     "end": {
+      "median": 57722672,
+      "min": 57722672,
+      "max": 57723165,
+      "samples": [
+       57723165,
+       57722672,
+       57722672
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 57346927,
+       "cumulative": 57346927
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3226,
+       "cumulative": 6020
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1914,
+       "cumulative": 2074
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 816,
+       "cumulative": 57347583
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 57347815
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "8d410cc7518a314441ae31c7070f0d8d2278b2fe",
+    "short": "8d410cc",
+    "author": "Ben Ito",
+    "date": "2026-01-08T12:00:00Z",
+    "subject": "add zero test"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 57724888,
+      "min": 57724888,
+      "max": 57730045,
+      "samples": [
+       57730045,
+       57724888,
+       57724888
+      ]
+     },
+     "end": {
+      "median": 57722672,
+      "min": 57722672,
+      "max": 57723165,
+      "samples": [
+       57723165,
+       57722672,
+       57722672
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 57346927,
+       "cumulative": 57346927
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3226,
+       "cumulative": 6020
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1914,
+       "cumulative": 2074
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 816,
+       "cumulative": 57347583
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 57347815
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "b6632e0709ec12bb9724d249be527756ce551f0e",
+    "short": "b6632e0",
+    "author": "Asha Rao",
+    "date": "2026-01-09T12:00:00Z",
+    "subject": "silence linter"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 57724888,
+      "min": 57724888,
+      "max": 57730045,
+      "samples": [
+       57730045,
+       57724888,
+       57724888
+      ]
+     },
+     "end": {
+      "median": 57722672,
+      "min": 57722672,
+      "max": 57723165,
+      "samples": [
+       57723165,
+       57722672,
+       57722672
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 57346927,
+       "cumulative": 57346927
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3226,
+       "cumulative": 6020
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1914,
+       "cumulative": 2074
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 816,
+       "cumulative": 57347583
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 57347815
+      }
+     ]
+    }
+   }
+  },
+  {
+   "commit": {
+    "sha": "469f570ff507493e4aaceb2b38aa6442c1058409",
+    "short": "469f570",
+    "author": "Asha Rao",
+    "date": "2026-01-10T12:00:00Z",
+    "subject": "changelog"
+   },
+   "valid": true,
+   "units": {
+    "workload": {
+     "outcome": "passed",
+     "peak": {
+      "median": 57724888,
+      "min": 57724888,
+      "max": 57730045,
+      "samples": [
+       57730045,
+       57724888,
+       57724888
+      ]
+     },
+     "end": {
+      "median": 57722672,
+      "min": 57722672,
+      "max": 57723165,
+      "samples": [
+       57723165,
+       57722672,
+       57722672
+      ]
+     },
+     "top": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "self": 57346927,
+       "cumulative": 57346927
+      },
+      {
+       "id": "shop/app.py::<module>",
+       "self": 3226,
+       "cumulative": 6020
+      },
+      {
+       "id": "shop/report.py::<module>",
+       "self": 1914,
+       "cumulative": 2074
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "self": 816,
+       "cumulative": 57347583
+      },
+      {
+       "id": "shop/app.py::run",
+       "self": 792,
+       "cumulative": 57347815
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "steps": [
+  {
+   "base": "da9eedfa0aa68dde23d84529b958620533383218",
+   "head": "0365968c76e0cbfa5adc638455933c9c3d5b0362",
+   "findings": []
+  },
+  {
+   "base": "0365968c76e0cbfa5adc638455933c9c3d5b0362",
+   "head": "bb7111865851358129f5da24f4e95d875aacaf00",
+   "findings": []
+  },
+  {
+   "base": "bb7111865851358129f5da24f4e95d875aacaf00",
+   "head": "5e69fdb8604c527148a617f654407c508a93ea17",
+   "findings": []
+  },
+  {
+   "base": "5e69fdb8604c527148a617f654407c508a93ea17",
+   "head": "326798baaadee05d056e3bad9d2a096f22e685b5",
+   "findings": [
+    {
+     "unit": "workload",
+     "metric": "peak",
+     "delta": 28200064,
+     "base": 29524502,
+     "head": 57724566,
+     "band": 1154491,
+     "verdict": {
+      "kind": "direct",
+      "function": "shop/parse.py::load_rows",
+      "file": "shop/parse.py",
+      "qualname": "load_rows",
+      "line": 4,
+      "cum_delta": 28599045,
+      "self_delta": 28599045,
+      "hunks": [
+       {
+        "file": "shop/parse.py",
+        "old_start": 7,
+        "old_len": 1,
+        "new_start": 7,
+        "new_len": 2,
+        "header": "@@ -7,1 +7,2 @@"
+       }
+      ],
+      "hot_lines": [
+       {
+        "file": "shop/parse.py",
+        "line": 8,
+        "bytes": 57346343
+       }
+      ],
+      "allocated_at": []
+     },
+     "functions": [
+      {
+       "id": "shop/parse.py::load_rows",
+       "file": "shop/parse.py",
+       "qualname": "load_rows",
+       "line": 4,
+       "cum_delta": 28599045,
+       "self_delta": 28599045,
+       "base_cum": 28747882,
+       "head_cum": 57346927,
+       "changed": true,
+       "hunks": [
+        {
+         "file": "shop/parse.py",
+         "old_start": 7,
+         "old_len": 1,
+         "new_start": 7,
+         "new_len": 2,
+         "header": "@@ -7,1 +7,2 @@"
+        }
+       ]
+      },
+      {
+       "id": "shop/app.py::run",
+       "file": "shop/app.py",
+       "qualname": "run",
+       "line": 7,
+       "cum_delta": 28599045,
+       "self_delta": 0,
+       "base_cum": 28748770,
+       "head_cum": 57347815,
+       "changed": false,
+       "hunks": []
+      },
+      {
+       "id": "shop/report.py::summarize",
+       "file": "shop/report.py",
+       "qualname": "summarize",
+       "line": 5,
+       "cum_delta": 28599045,
+       "self_delta": 0,
+       "base_cum": 28748138,
+       "head_cum": 57347183,
+       "changed": false,
+       "hunks": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "base": "326798baaadee05d056e3bad9d2a096f22e685b5",
+   "head": "624d2515c64d2aec5da3368094f155d58d1fb0de",
+   "findings": []
+  },
+  {
+   "base": "624d2515c64d2aec5da3368094f155d58d1fb0de",
+   "head": "7427306cc69e7c358f1b50ab64a9916ae958ac8d",
+   "findings": [
+    {
+     "unit": "workload",
+     "metric": "retained",
+     "delta": 57710572,
+     "base": 12100,
+     "head": 57722672,
+     "band": 1154453,
+     "verdict": {
+      "kind": "direct",
+      "function": "shop/report.py::summarize",
+      "file": "shop/report.py",
+      "qualname": "summarize",
+      "line": 7,
+      "cum_delta": 57710754,
+      "self_delta": 560,
+      "hunks": [
+       {
+        "file": "shop/report.py",
+        "old_start": 6,
+        "old_len": 1,
+        "new_start": 8,
+        "new_len": 4,
+        "header": "@@ -6,1 +8,4 @@"
+       }
+      ],
+      "hot_lines": [],
+      "allocated_at": [
+       {
+        "file": "shop/parse.py",
+        "line": 8,
+        "bytes": 57710986
+       }
+      ]
+     },
+     "functions": [
+      {
+       "id": "shop/report.py::summarize",
+       "file": "shop/report.py",
+       "qualname": "summarize",
+       "line": 7,
+       "cum_delta": 57710754,
+       "self_delta": 560,
+       "base_cum": 1224,
+       "head_cum": 57711978,
+       "changed": true,
+       "hunks": [
+        {
+         "file": "shop/report.py",
+         "old_start": 6,
+         "old_len": 1,
+         "new_start": 8,
+         "new_len": 4,
+         "header": "@@ -6,1 +8,4 @@"
+        }
+       ]
+      },
+      {
+       "id": "shop/app.py::run",
+       "file": "shop/app.py",
+       "qualname": "run",
+       "line": 7,
+       "cum_delta": 57710354,
+       "self_delta": 0,
+       "base_cum": 1696,
+       "head_cum": 57712050,
+       "changed": false,
+       "hunks": []
+      },
+      {
+       "id": "shop/parse.py::load_rows",
+       "file": "shop/parse.py",
+       "qualname": "load_rows",
+       "line": 4,
+       "cum_delta": 57710194,
+       "self_delta": 57710194,
+       "base_cum": 1080,
+       "head_cum": 57711274,
+       "changed": false,
+       "hunks": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "base": "7427306cc69e7c358f1b50ab64a9916ae958ac8d",
+   "head": "8d410cc7518a314441ae31c7070f0d8d2278b2fe",
+   "findings": []
+  },
+  {
+   "base": "8d410cc7518a314441ae31c7070f0d8d2278b2fe",
+   "head": "b6632e0709ec12bb9724d249be527756ce551f0e",
+   "findings": []
+  },
+  {
+   "base": "b6632e0709ec12bb9724d249be527756ce551f0e",
+   "head": "469f570ff507493e4aaceb2b38aa6442c1058409",
+   "findings": []
+  }
+ ],
+ "findings": [
+  {
+   "unit": "workload",
+   "metric": "retained",
+   "delta": 57710572,
+   "base": 12100,
+   "head": 57722672,
+   "band": 1154453,
+   "verdict": {
+    "kind": "direct",
+    "function": "shop/report.py::summarize",
+    "file": "shop/report.py",
+    "qualname": "summarize",
+    "line": 7,
+    "cum_delta": 57710754,
+    "self_delta": 560,
+    "hunks": [
+     {
+      "file": "shop/report.py",
+      "old_start": 6,
+      "old_len": 1,
+      "new_start": 8,
+      "new_len": 4,
+      "header": "@@ -6,1 +8,4 @@"
+     }
+    ],
+    "hot_lines": [],
+    "allocated_at": [
+     {
+      "file": "shop/parse.py",
+      "line": 8,
+      "bytes": 57710986
+     }
+    ]
+   },
+   "functions": [
+    {
+     "id": "shop/report.py::summarize",
+     "file": "shop/report.py",
+     "qualname": "summarize",
+     "line": 7,
+     "cum_delta": 57710754,
+     "self_delta": 560,
+     "base_cum": 1224,
+     "head_cum": 57711978,
+     "changed": true,
+     "hunks": [
+      {
+       "file": "shop/report.py",
+       "old_start": 6,
+       "old_len": 1,
+       "new_start": 8,
+       "new_len": 4,
+       "header": "@@ -6,1 +8,4 @@"
+      }
+     ]
+    },
+    {
+     "id": "shop/app.py::run",
+     "file": "shop/app.py",
+     "qualname": "run",
+     "line": 7,
+     "cum_delta": 57710354,
+     "self_delta": 0,
+     "base_cum": 1696,
+     "head_cum": 57712050,
+     "changed": false,
+     "hunks": []
+    },
+    {
+     "id": "shop/parse.py::load_rows",
+     "file": "shop/parse.py",
+     "qualname": "load_rows",
+     "line": 4,
+     "cum_delta": 57710194,
+     "self_delta": 57710194,
+     "base_cum": 1080,
+     "head_cum": 57711274,
+     "changed": false,
+     "hunks": []
+    }
+   ],
+   "commit": "7427306cc69e7c358f1b50ab64a9916ae958ac8d",
+   "parent": "624d2515c64d2aec5da3368094f155d58d1fb0de"
+  },
+  {
+   "unit": "workload",
+   "metric": "peak",
+   "delta": 28200064,
+   "base": 29524502,
+   "head": 57724566,
+   "band": 1154491,
+   "verdict": {
+    "kind": "direct",
+    "function": "shop/parse.py::load_rows",
+    "file": "shop/parse.py",
+    "qualname": "load_rows",
+    "line": 4,
+    "cum_delta": 28599045,
+    "self_delta": 28599045,
+    "hunks": [
+     {
+      "file": "shop/parse.py",
+      "old_start": 7,
+      "old_len": 1,
+      "new_start": 7,
+      "new_len": 2,
+      "header": "@@ -7,1 +7,2 @@"
+     }
+    ],
+    "hot_lines": [
+     {
+      "file": "shop/parse.py",
+      "line": 8,
+      "bytes": 57346343
+     }
+    ],
+    "allocated_at": []
+   },
+   "functions": [
+    {
+     "id": "shop/parse.py::load_rows",
+     "file": "shop/parse.py",
+     "qualname": "load_rows",
+     "line": 4,
+     "cum_delta": 28599045,
+     "self_delta": 28599045,
+     "base_cum": 28747882,
+     "head_cum": 57346927,
+     "changed": true,
+     "hunks": [
+      {
+       "file": "shop/parse.py",
+       "old_start": 7,
+       "old_len": 1,
+       "new_start": 7,
+       "new_len": 2,
+       "header": "@@ -7,1 +7,2 @@"
+      }
+     ]
+    },
+    {
+     "id": "shop/app.py::run",
+     "file": "shop/app.py",
+     "qualname": "run",
+     "line": 7,
+     "cum_delta": 28599045,
+     "self_delta": 0,
+     "base_cum": 28748770,
+     "head_cum": 57347815,
+     "changed": false,
+     "hunks": []
+    },
+    {
+     "id": "shop/report.py::summarize",
+     "file": "shop/report.py",
+     "qualname": "summarize",
+     "line": 5,
+     "cum_delta": 28599045,
+     "self_delta": 0,
+     "base_cum": 28748138,
+     "head_cum": 57347183,
+     "changed": false,
+     "hunks": []
+    }
+   ],
+   "commit": "326798baaadee05d056e3bad9d2a096f22e685b5",
+   "parent": "5e69fdb8604c527148a617f654407c508a93ea17"
+  }
+ ],
+ "warnings": []
+}
