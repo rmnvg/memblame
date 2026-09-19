@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { buildArgs, parseProgress, runMemblame } from "../src/cli";
 import { chartSvg, esc, mb, niceStep, renderHtml } from "../src/render";
-import { findTests, isTestFile, moduleName, suggestWorkloads } from "../src/workload";
+import { findTests, isTestFile, locateScope, moduleName, suggestWorkloads } from "../src/workload";
 
 const fixture = (name: string) =>
   JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "test", "fixtures", `${name}.json`), "utf8"));
@@ -112,4 +112,34 @@ test("runMemblame end-to-end with the bundled engine (skipped without python3)",
   }
   const job = runMemblame({ python: "python3", repo: process.cwd(), args: ["diff", "--json", "-w", "call:nope:nope", "-C", "/"], bundledPath: bundled });
   await assert.rejects(job.result, /not inside a git repository|exited with code/);
+});
+
+test("locateScope finds the function in the current text, nearest to the old line", () => {
+  const text = ["import x", "", "class Loader:", "    def load(self):", "        pass", "", "def load():", "    pass"].join("\n");
+  assert.equal(locateScope(text, "Loader.load", 4), 3);
+  assert.equal(locateScope(text, "load", 20), 6);
+  assert.equal(locateScope(text, "Loader", 1), 2);
+  assert.equal(locateScope(text, "<module>", 9), 0);
+  assert.equal(locateScope(text, "gone", 3), undefined);
+});
+
+test("reports explain skipped commits and units that were not compared", () => {
+  const diff = {
+    kind: "diff", workload: "w", python: "p", valid: true, findings: [], notes: ["working tree is clean"],
+    base: { sha: "a", short: "a", subject: "s", author: "x" }, head: { sha: "WORKTREE", short: "working", subject: "", author: "" },
+    units: [
+      { name: "t::a", status: "outcome_changed", outcome: { base: "passed", head: "error" } },
+      { name: "t::b", status: "new" },
+    ],
+  };
+  const html = renderHtml(diff, "N", "c");
+  assert.match(html, /outcome changed passed → error/);
+  assert.match(html, /only exists after the change/);
+  assert.match(html, /working tree is clean/);
+  const range = fixture("range");
+  range.points[3].valid = false;
+  range.points[3].units = {};
+  const r = renderHtml(range, "N", "c");
+  assert.match(r, /Skipped: this commit could not be measured/);
+  assert.doesNotMatch(r, /undefined|NaN/);
 });

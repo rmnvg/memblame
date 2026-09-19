@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,7 @@ def test_diff_blames_retention_on_the_changed_caller(planted):
 
 def test_range_finds_exactly_the_planted_commits_and_caches(planted):
     base, head = planted.commits["initial"], planted.commits["changelog"]
+    shutil.rmtree(planted.path / ".memblame", ignore_errors=True)  # other tests share the repo
     with session(planted) as s:
         first = api.range_(s, base, head)
         fresh = s.measured

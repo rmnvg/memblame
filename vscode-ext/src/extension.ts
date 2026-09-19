@@ -4,12 +4,13 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { buildArgs, runMemblame } from "./cli";
 import { mb, renderHtml } from "./render";
-import { findTests, isTestFile, suggestWorkloads } from "./workload";
+import { findTests, isTestFile, locateScope, suggestWorkloads } from "./workload";
 
 let panel: vscode.WebviewPanel | undefined;
+let state: vscode.ExtensionContext | undefined;
 let lastResult: any;
 let running: { cancel: () => void } | undefined;
-const annotations = new Map<string, { line: number; title: string; hover: string }[]>(); // abs file -> lenses
+const annotations = new Map<string, { line: number; qualname: string; title: string; hover: string }[]>(); // abs file -> lenses
 const hotLines = new Map<string, { line: number; text: string }[]>();
 const lensChanged = new vscode.EventEmitter<void>();
 const hotDecoration = vscode.window.createTextEditorDecorationType({
@@ -39,10 +40,25 @@ export interface MemBlameApi {
 }
 
 export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
+  state = ctx;
   const bundled = path.join(ctx.extensionPath, "python");
   const cmd = (id: string, fn: (...a: any[]) => any) => ctx.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
-  cmd("memblame.compareWorkingTree", (workload?: string) => runCommand(bundled, ["diff", "HEAD"], workload));
+  cmd("memblame.compareWorkingTree", async (arg?: string | { file: string; test: string }) => {
+    let workload = typeof arg === "string" ? arg : undefined;
+    if (arg && typeof arg === "object") {
+      const repo = await repoRoot(vscode.Uri.file(arg.file));
+      if (!repo) {
+        return;
+      }
+      const rel = path.relative(canon(repo), canon(arg.file)).split(path.sep).join("/");
+      workload = `pytest:${rel}::${arg.test}`;
+    }
+    if (!(await saveOrContinue())) {
+      return;
+    }
+    await runCommand(bundled, ["diff", "HEAD"], workload);
+  });
   cmd("memblame.compareCommits", async () => {
     const repo = await repoRoot();
     if (!repo) {
@@ -162,7 +178,7 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
         try {
           const result = await job.result;
           lastResult = result;
-          applyAnnotations(result);
+          await applyAnnotations(result);
           showReport(ctx, result);
           summarize(result);
         } catch (err: any) {
@@ -185,16 +201,17 @@ export function deactivate() {
 
 // ------------------------------------------------------------------ helpers
 
-async function repoRoot(): Promise<string | undefined> {
-  const doc = vscode.window.activeTextEditor?.document;
-  const folder = (doc && vscode.workspace.getWorkspaceFolder(doc.uri)) ?? vscode.workspace.workspaceFolders?.[0];
+async function repoRoot(forFile?: vscode.Uri): Promise<string | undefined> {
+  const doc = forFile ?? vscode.window.activeTextEditor?.document.uri;
+  const folder = (doc && vscode.workspace.getWorkspaceFolder(doc)) ?? vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
     vscode.window.showErrorMessage("MemBlame: open a folder inside a git repository first.");
     return undefined;
   }
+  const cwd = forFile ? path.dirname(forFile.fsPath) : folder.uri.fsPath;
   const { execFile } = await import("child_process");
   return new Promise((resolve) =>
-    execFile("git", ["rev-parse", "--show-toplevel"], { cwd: folder.uri.fsPath }, (err, stdout) => {
+    execFile("git", ["rev-parse", "--show-toplevel"], { cwd }, (err, stdout) => {
       if (err) {
         vscode.window.showErrorMessage("MemBlame: this folder is not a git repository.");
         resolve(undefined);
@@ -203,6 +220,23 @@ async function repoRoot(): Promise<string | undefined> {
       }
     }),
   );
+}
+
+/** The engine measures files on disk: offer to save unsaved Python edits first. */
+async function saveOrContinue(): Promise<boolean> {
+  const dirty = vscode.workspace.textDocuments.filter((d) => d.isDirty && d.languageId === "python");
+  if (!dirty.length) {
+    return true;
+  }
+  const choice = await vscode.window.showWarningMessage(
+    `MemBlame measures the files on disk; ${dirty.length} Python file(s) have unsaved changes.`,
+    "Save All and Continue",
+    "Continue Without Saving",
+  );
+  if (choice === "Save All and Continue") {
+    return vscode.workspace.saveAll(false);
+  }
+  return choice === "Continue Without Saving";
 }
 
 async function pickCommit(repo: string, title: string, allowWorktree = false): Promise<string | undefined> {
@@ -247,8 +281,8 @@ async function resolvePython(repo: string): Promise<string> {
 }
 
 async function chooseWorkload(force: boolean): Promise<string | undefined> {
-  const cfg = vscode.workspace.getConfiguration("memblame");
-  const current = cfg.get<string>("workload");
+  const configured = vscode.workspace.getConfiguration("memblame").get<string>("workload");
+  const current = configured || state?.workspaceState.get<string>("workload");
   if (current && !force) {
     return current;
   }
@@ -273,8 +307,11 @@ async function chooseWorkload(force: boolean): Promise<string | undefined> {
   if (!workload) {
     workload = await vscode.window.showInputBox({ prompt: "Workload", value: current || "pytest:tests/", placeHolder: "pytest:tests/test_big.py::test_load" });
   }
+  if (workload && configured && configured !== workload) {
+    vscode.window.showInformationMessage("MemBlame: the memblame.workload setting takes precedence; update it to switch permanently.");
+  }
   if (workload) {
-    await cfg.update("workload", workload, vscode.ConfigurationTarget.Workspace);
+    await state?.workspaceState.update("workload", workload);
   }
   return workload;
 }
@@ -317,17 +354,30 @@ function summarize(result: any) {
     const f = ups[0];
     const where = f.verdict?.qualname ? ` in ${f.verdict.qualname}()` : "";
     vscode.window.showWarningMessage(`MemBlame: ${f.metric} memory ${mb(f.delta, true)}${where} (${f.unit}).`);
-  } else if (result.valid !== false) {
+  } else if (result.valid === false || result.status === "error") {
+    const w = (result.warnings ?? []).find((x: string) => /INVALID|SKIPPED/.test(x)) ?? result.message ?? "see report";
+    vscode.window.showErrorMessage(`MemBlame: could not compare. ${w}`);
+  } else {
     vscode.window.setStatusBarMessage("MemBlame: no significant memory increase", 8000);
   }
 }
 
 // ------------------------------------------------------------------ annotations
 
-function applyAnnotations(result: any) {
+async function gitOut(cwd: string, args: string[]): Promise<string> {
+  const { execFile } = await import("child_process");
+  return new Promise((resolve) => execFile("git", args, { cwd }, (_e, out) => resolve((out ?? "").trim())));
+}
+
+async function isDirty(repo: string): Promise<boolean> {
+  return (await gitOut(repo, ["status", "--porcelain", "--untracked-files=no"])) !== "";
+}
+
+async function applyAnnotations(result: any) {
   annotations.clear();
   hotLines.clear();
   const repo: string = result.repo ?? "";
+  const head = await gitOut(repo, ["rev-parse", "HEAD"]);
   const findings: any[] = result.findings ?? [];
   for (const f of findings) {
     const v = f.verdict;
@@ -338,9 +388,13 @@ function applyAnnotations(result: any) {
     const since = f.commit ? ` at ${String(f.commit).slice(0, 7)}` : result.kind === "diff" ? ` vs ${result.base?.short ?? "base"}` : "";
     const title = `$(${f.delta > 0 ? "arrow-up" : "arrow-down"}) ${f.metric} memory ${mb(f.delta, true)}${since} · ${v.kind} · ${f.unit}`;
     const list = annotations.get(abs) ?? [];
-    list.push({ line: v.line, title, hover: `MemBlame: ${v.function}` });
+    list.push({ line: v.line, qualname: v.qualname, title, hover: `MemBlame: ${v.function}` });
     annotations.set(abs, list);
-    for (const hl of [...(v.hot_lines ?? []), ...(v.allocated_at ?? [])]) {
+    // Line numbers are from the measured commit; only annotate lines if that is what's on disk.
+    const lineCommit = f.commit ?? (result.kind === "diff" ? result.head?.sha : result.culprit?.sha);
+    const current = lineCommit === "WORKTREE" || (lineCommit === head && !(await isDirty(repo)));
+    const where = f.delta > 0 ? (v.hot_lines ?? []) : [];
+    for (const hl of current ? [...where, ...(v.allocated_at ?? [])] : []) {
       const habs = canon(path.join(repo, hl.file));
       const hs = hotLines.get(habs) ?? [];
       if (!hs.some((h) => h.line === hl.line)) {
@@ -371,8 +425,9 @@ class LensProvider implements vscode.CodeLensProvider {
   provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
     const lenses: vscode.CodeLens[] = [];
     for (const a of annotations.get(canon(doc.uri.fsPath)) ?? []) {
-      if (a.line - 1 < doc.lineCount) {
-        const range = doc.lineAt(Math.max(0, a.line - 1)).range;
+      const line = locateScope(doc.getText(), a.qualname, a.line);
+      if (line !== undefined) {
+        const range = doc.lineAt(line).range;
         lenses.push(new vscode.CodeLens(range, { title: a.title, tooltip: a.hover, command: "memblame.showLastReport" }));
       }
     }
@@ -386,7 +441,7 @@ class LensProvider implements vscode.CodeLensProvider {
               title: "$(pulse) Memory vs HEAD",
               tooltip: "MemBlame: compare this test's memory with and without your uncommitted changes",
               command: "memblame.compareWorkingTree",
-              arguments: [`pytest:${rel}::${t.name}`],
+              arguments: [{ file: doc.uri.fsPath, test: t.name }],
             }),
           );
         }

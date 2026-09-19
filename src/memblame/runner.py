@@ -94,8 +94,9 @@ class Attributor:
 
     def __init__(self, root: str, exclude_files: set[str]):
         self.root = os.path.realpath(root)
-        self.prefix = self.root + os.sep
-        self.exclude = {os.path.realpath(f) for f in exclude_files}
+        # normcase: Windows paths are case-insensitive ("C:\\Users" vs "c:\\users")
+        self.prefix = os.path.normcase(self.root + os.sep)
+        self.exclude = {os.path.normcase(os.path.realpath(f)) for f in exclude_files}
         self._file_cache: dict[str, str | None] = {}
         self._scope_cache: dict[str, list] = {}
         self._frame_cache: dict[tuple[str, int], tuple | None] = {}
@@ -106,9 +107,9 @@ class Attributor:
             return self._file_cache[filename]
         rel = None
         # "<frozen ...>", "<string>" etc. are not files; realpath would resolve them to cwd.
-        real = os.path.realpath(filename) if os.path.isabs(filename) else ""
+        real = os.path.normcase(os.path.realpath(filename)) if os.path.isabs(filename) else ""
         if real.startswith(self.prefix) and real not in self.exclude:
-            parts = real[len(self.prefix) :].split(os.sep)
+            parts = os.path.realpath(filename)[len(self.prefix):].split(os.sep)
             if not SKIP_DIRS.intersection(parts):
                 rel = "/".join(parts)
         self._file_cache[filename] = rel
@@ -330,7 +331,7 @@ def _project_modules(dirs: list[str]) -> set[str]:
 
 def check_environment(root: str, dirs: list[str]) -> list[str]:
     """Project modules that were imported from outside the checkout (e.g. editable installs)."""
-    prefix = os.path.realpath(root) + os.sep
+    prefix = os.path.normcase(os.path.realpath(root) + os.sep)
     # Also scan root and src/ even if not configured: a wrong pythonpath is exactly the case
     # where the project gets imported from somewhere else.
     wanted = _project_modules([*dirs, root, os.path.join(root, "src")])
@@ -339,7 +340,7 @@ def check_environment(root: str, dirs: list[str]) -> list[str]:
         if name.split(".")[0] not in wanted:
             continue
         f = getattr(mod, "__file__", None)
-        if f and not os.path.realpath(f).startswith(prefix):
+        if f and not os.path.normcase(os.path.realpath(f)).startswith(prefix):
             problems.append(f"{name} imported from {f}")
     return sorted(problems)
 

@@ -179,7 +179,7 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
 
     steps = []
     order = sorted(measured)
-    for lo, hi in zip(order, order[1:], strict=False):
+    for lo, hi in zip(order, order[1:]):  # noqa: B905 - py3.9 has no strict=
         a, b = measured[lo], measured[hi]
         if not (a[1]["valid"] and b[1]["valid"]):
             continue

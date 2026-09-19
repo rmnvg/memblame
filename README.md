@@ -37,7 +37,7 @@ above the blamed function, and a one-click "Memory vs HEAD" on every pytest test
 pip install memblame        # or: pipx install memblame
 ```
 
-No dependencies: the core is standard-library only. Python 3.10+.
+No dependencies: the core is standard-library only. Python 3.9+.
 
 ## Usage
 
@@ -79,10 +79,11 @@ pythonpath = ["src"]
    They repeat until two runs agree, and the median is reported. `tracemalloc` counts
    are nearly deterministic: on real projects run-to-run noise was a few KB.
 3. A change counts only if it exceeds the noise band: `max(2 × spread, 2 % of peak, 64 KiB)`.
-4. Only for commits around a significant change, one **attribution run** records
-   tracebacks. A profile hook snapshots memory when it approaches the known peak, and each
-   allocation is credited to project functions: *own* bytes (allocated in the function)
-   and *incl. callees* bytes.
+4. Only for commits around a significant change, an **attribution run** records
+   tracebacks and snapshots memory as it approaches the known peak. It uses a cheap polling
+   thread first, and an exact profile hook only if the peak was too short-lived to catch.
+   Each allocation is credited to project functions: *own* bytes (allocated in the
+   function) and *incl. callees* bytes.
 5. The function deltas are matched against `git diff -U0` hunks, on the new side for
    growth and the old side for memory that went away.
    * **direct**: the function whose code changed accounts for the growth.
@@ -106,6 +107,11 @@ pythonpath = ["src"]
 * If your project is installed so that imports resolve **outside** the checked-out commit
   (for example `pip install -e .` with a `src/` layout and no `--pythonpath`), memblame
   detects it and reports `invalid environment` instead of wrong numbers.
+* pytest workloads always run in-process, in file order and without coverage: memblame
+  adds `-n 0` (pytest-xdist), `-p no:randomly` and `--no-cov` (pytest-cov) when those
+  plugins are installed.
+* A commit where the workload fails or that cannot be measured (crash, timeout) is skipped,
+  never reported as a memory change. `bisect` skips it the way `git bisect skip` does.
 * Adaptive `range` can miss a change that is exactly undone later within one unsplit
   segment. Use `--all` to measure every commit.
 * Attribution names where memory was **allocated**. For "kept alive too long" problems it
@@ -130,8 +136,8 @@ noise was under 0.05 % of the peak. See `PROJECT.md` for the full log.
 ## Development
 
 ```
-uv venv && uv pip install -e . pytest ruff
-pytest            # unit + end-to-end tests against generated git repos
+uv venv && uv pip install -e . pytest ruff pytest-xdist pytest-cov pytest-randomly
+pytest            # unit + end-to-end tests against generated git repos (~90 s)
 ruff check src tests
 python tests/fixture_repo.py /tmp/demo   # a repo with two planted regressions
 ```

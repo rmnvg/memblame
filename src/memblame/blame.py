@@ -22,6 +22,10 @@ NOISE_BYTES = 4096  # per-function differences below this are interpreter noise
 TRUNCATED_NOTE = 0.05  # mention truncated stacks when they hide more than 5% of the memory
 
 
+EMPTY_SUMMARY = {"total": 0, "coverage": 0, "unattributed": 0, "truncated": 0, "functions": [],
+                 "lines": []}
+
+
 def noise_band(a: dict, b: dict) -> int:
     spread = max(a["max"] - a["min"], b["max"] - b["min"])
     return int(max(SPREAD_FACTOR * spread, REL_BAND * max(a["median"], b["median"]), MIN_BAND))
@@ -103,9 +107,19 @@ def compare_metric(a_unit: dict, b_unit: dict, metric: str, a_functions: dict,
         "direction": "up" if delta > 0 else "down" if delta < 0 else "flat",
     }
     a_sum, b_sum = a_unit.get(summary_key), b_unit.get(summary_key)
-    if not (a_sum and b_sum):
-        out["functions"], out["verdict"] = [], {"kind": "unattributed"}
+    note = None
+    if not (a_sum or b_sum):
+        out["functions"] = []
+        out["verdict"] = {"kind": "unattributed", "reason": "no attribution data (the workload "
+                          "is too short-lived to snapshot at its peak)"}
         return out
+    if not (a_sum and b_sum):
+        # One side's peak was too short-lived to snapshot (e.g. a tiny workload whose peak is
+        # inside a single C call). Treat it as empty: deltas become upper bounds.
+        missing = "base" if not a_sum else "head"
+        note = (f"no peak snapshot for the {missing} side (its peak was too short-lived); "
+                "function deltas are upper bounds")
+        a_sum, b_sum = a_sum or EMPTY_SUMMARY, b_sum or EMPTY_SUMMARY
 
     fa, fb = _by_id(a_sum), _by_id(b_sum)
     sign = 1 if delta >= 0 else -1
@@ -136,6 +150,8 @@ def compare_metric(a_unit: dict, b_unit: dict, metric: str, a_functions: dict,
     # Where the memory lives: at head for growth, at base for memory that went away.
     where = b_sum if sign > 0 else a_sum
     out["verdict"] = _verdict(rows, delta, sign, where) if out["significant"] else {"kind": "none"}
+    if note and out["significant"]:
+        out["verdict"]["note"] = note
     return out
 
 

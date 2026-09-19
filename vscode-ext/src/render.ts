@@ -154,7 +154,8 @@ export function chartSvg(points: any[], unit: string, flaggedPeak: Set<number>, 
       const en = s.end[i];
       const tip = `${p.commit.short} ${p.commit.subject}\npeak ${pk === null ? "-" : mb(pk)}  retained ${en === null ? "-" : mb(en)}`;
 
-      const col = `<rect class="hit" data-point="${i}" x="${x(i) - 8}" y="${T}" width="16" height="${H - T - B}"><title>${esc(tip)}</title></rect>`;
+      const skip = p.valid === false ? `<text class="axis skip" x="${x(i)}" y="${H - B - 4}" text-anchor="middle">×</text>` : "";
+      const col = skip + `<rect class="hit" data-point="${i}" x="${x(i) - 8}" y="${T}" width="16" height="${H - T - B}"><title>${esc(tip)}</title></rect>`;
       const fp = flaggedPeak.has(i);
       const fe = flaggedEnd.has(i);
       const a = pk === null ? "" : `<circle class="dot${fp ? " flagged" : ""} peak" cx="${x(i)}" cy="${y(pk)}" r="${fp ? 6 : 3.5}"/>`;
@@ -189,7 +190,11 @@ function unitsOf(points: any[]): string[] {
 
 function warnings(d: any): string {
   const ws: string[] = d.warnings ?? [];
-  return ws.length ? `<div class="warn">${ws.map((w) => `<p>⚠ ${esc(w)}</p>`).join("")}</div>` : "";
+  const notes: string[] = d.notes ?? [];
+  return (
+    (ws.length ? `<div class="warn">${ws.map((w) => `<p>⚠ ${esc(w)}</p>`).join("")}</div>` : "") +
+    notes.map((n) => `<p class="muted">ℹ ${esc(n)}</p>`).join("")
+  );
 }
 
 function renderRange(d: any): string {
@@ -215,6 +220,12 @@ function renderRange(d: any): string {
     .join("");
   const details = points
     .map((p, i) => {
+      if (p.valid === false) {
+        return `<div class="point" data-point="${i}" hidden><h3>${commitLabel(p.commit)}</h3><p class="muted">Skipped: this commit could not be measured (see warnings).</p></div>`;
+      }
+      if (p.measured === false) {
+        return `<div class="point" data-point="${i}" hidden><h3>${commitLabel(p.commit)}</h3><p class="muted">Not measured: memory did not change significantly between the measured commits around it.</p></div>`;
+      }
       const fs = findings.filter((f) => f.commit === p.commit.sha);
       const rows = Object.entries(p.units ?? {})
         .map(
@@ -233,7 +244,9 @@ function renderRange(d: any): string {
     ? `<h2>Findings</h2>${findings.map((f) => findingCard(f, points[bySha.get(f.commit) ?? 0]?.commit)).join("")}`
     : `<h2>Findings</h2><p>No significant memory changes in this range.</p>`;
   return (
-    `<h1>Memory over ${points.length} commits</h1>${select}${charts}` +
+    `<h1>Memory over ${points.length} commits</h1>` +
+    (d.mode === "adaptive" ? `<p class="muted">Measured ${d.measured} of ${points.length} commits (only where memory changed).</p>` : "") +
+    `${select}${charts}` +
     `<p class="muted hint">Click a commit in the chart for details.</p>${details}${summary}`
   );
 }
@@ -255,6 +268,18 @@ function renderDiff(d: any): string {
       ),
     )
     .join("");
+  const other = (d.units ?? [])
+    .filter((u: any) => u.status !== "compared")
+    .map((u: any) => {
+      const why =
+        u.status === "outcome_changed"
+          ? `outcome changed ${esc(u.outcome.base)} → ${esc(u.outcome.head)}, so memory is not compared`
+          : u.status === "new"
+            ? "only exists after the change"
+            : "only exists before the change";
+      return `<li>${esc(u.name)}: ${why}</li>`;
+    })
+    .join("");
   const changed = (d.changed_functions ?? []).map((c: any) => link(c.file, c.line, c.id)).join(", ");
   const verdict = findings.length
     ? findings.some((f) => f.delta > 0)
@@ -264,6 +289,7 @@ function renderDiff(d: any): string {
   return (
     `<h1>Memory comparison</h1><p>${title}</p>${verdict}` +
     findings.map((f) => findingCard(f)).join("") +
+    (other ? `<h2>Not compared</h2><ul>${other}</ul>` : "") +
     `<h2>All measurements</h2><table class="fns"><thead><tr><th>unit</th><th>metric</th><th class="num">before</th><th class="num">after</th><th class="num">Δ</th><th class="num">noise</th></tr></thead><tbody>${rows}</tbody></table>` +
     (changed ? `<p class="muted">Changed functions: ${changed}</p>` : "")
   );
@@ -276,7 +302,8 @@ function renderBisect(d: any): string {
   const trail = (d.measurements ?? [])
     .map(
       (t: any) =>
-        `<tr class="${t.bad ? "bad" : "good"}"><td>${t.bad ? "bad" : "good"}</td><td>${commitLabel(t.commit)}</td><td class="num">${mb(t.value)}</td></tr>`,
+        `<tr class="${t.skipped ? "" : t.bad ? "bad" : "good"}"><td>${t.skipped ? "skipped" : t.bad ? "bad" : "good"}</td>` +
+        `<td>${commitLabel(t.commit)}</td><td class="num">${t.value === null || t.value === undefined ? "–" : mb(t.value)}</td></tr>`,
     )
     .join("");
   return (
@@ -333,6 +360,7 @@ tr.bad td { color: var(--vscode-charts-red); } tr.good td { color: var(--vscode-
 .warn { border: 1px solid var(--vscode-inputValidation-warningBorder); background: var(--vscode-inputValidation-warningBackground); padding: 4px 12px; margin-top: 12px; border-radius: 4px; }
 svg.chart { width: 100%; height: auto; margin-top: 8px; }
 .grid { stroke: var(--vscode-panel-border); stroke-width: 1; }
+.skip { fill: var(--vscode-charts-orange); font-size: 14px; }
 .axis { fill: var(--vscode-descriptionForeground); font-size: 11px; font-family: var(--vscode-editor-font-family); }
 .line { fill: none; stroke-width: 2; } .line.peak { stroke: var(--vscode-charts-blue); } .line.end { stroke: var(--vscode-charts-purple); stroke-dasharray: 5 4; }
 .dot.peak { fill: var(--vscode-charts-blue); } .dot.end { fill: var(--vscode-charts-purple); }

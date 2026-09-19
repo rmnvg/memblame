@@ -81,3 +81,26 @@ export function suggestWorkloads(relPath: string, text: string, cursorLine: numb
   out.push({ label: `$(file-code) ${relPath}`, workload: `script:${relPath}`, detail: "run this file as a script" });
   return out;
 }
+
+/**
+ * 0-based line of `def`/`class` for a qualname like "Loader.load" or "Outer.<locals>.inner" in
+ * the current text; `hint` (1-based line from the measured commit) breaks ties. "<module>"
+ * maps to the first line.
+ */
+export function locateScope(text: string, qualname: string, hint: number): number | undefined {
+  if (qualname === "<module>") {
+    return 0;
+  }
+  const name = qualname.split(".").pop() ?? qualname;
+  const re = new RegExp(`^\\s*(?:async\\s+)?(?:def|class)\\s+${name.replace(/[^\w]/g, "")}\\b`);
+  const hits: number[] = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (re.test(line)) {
+      hits.push(i);
+    }
+  });
+  if (!hits.length) {
+    return undefined;
+  }
+  return hits.reduce((best, i) => (Math.abs(i + 1 - hint) < Math.abs(best + 1 - hint) ? i : best));
+}

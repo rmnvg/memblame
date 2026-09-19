@@ -35,6 +35,18 @@ export async function run(): Promise<void> {
     assert.ok(titles.filter((t) => t.includes("Memory vs HEAD")).length >= 2, titles.join(" | "));
   });
 
+  await step("clicking the test lens measures exactly that test", async () => {
+    const uri = vscode.Uri.file(path.join(repo, "tests", "test_app.py"));
+    const lenses = (await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", uri)) ?? [];
+    const lens = lenses.find((l) => l.command?.title.includes("Memory vs HEAD"))!;
+    await vscode.commands.executeCommand(lens.command!.command, ...(lens.command!.arguments ?? []));
+    const r = api.lastResult();
+    assert.equal(r?.kind, "diff");
+    assert.equal(r.workload, "pytest:tests/test_app.py::test_pipeline");
+    assert.deepEqual(r.units.map((u: any) => u.name), ["tests/test_app.py::test_pipeline"]);
+    assert.equal(r.findings[0]?.verdict?.function, "shop/parse.py::load_rows");
+  });
+
   await step("working tree vs HEAD blames the uncommitted change", async () => {
     await vscode.commands.executeCommand("memblame.compareWorkingTree");
     const r = api.lastResult();
