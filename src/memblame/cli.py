@@ -201,7 +201,27 @@ def main(argv: list[str] | None = None) -> int:
         print("memblame: interrupted", file=sys.stderr)
         return 130
     print(json.dumps(out, indent=1) if args.json else fmt(out))
+    if _has_measurement_failure(out):
+        return 1
     return 3 if _has_regression(out) else 0
+
+
+def _has_measurement_failure(out: dict) -> bool:
+    """A missing/failed measurement must not look like a successful regression check."""
+    def failed(result: dict) -> bool:
+        units = result.get("units", {})
+        return (result.get("valid") is False or not units
+                or any(u["outcome"] in ("failed", "error") for u in units.values()))
+
+    if out["kind"] == "run":
+        return failed(out["result"])
+    if out["kind"] == "diff":
+        return (out.get("valid") is False
+                or any(failed(r) for r in out.get("results", {}).values()))
+    if out["kind"] == "range":
+        return any(failed(p) for p in out["points"] if p["measured"])
+    # Bisect deliberately skips broken intermediate commits and can still find a culprit.
+    return out.get("status") == "error"
 
 
 def _has_regression(out: dict) -> bool:

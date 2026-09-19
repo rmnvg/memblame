@@ -46,6 +46,9 @@ def _warnings(d: dict) -> list[str]:
 
 def format_run(d: dict) -> str:
     c, r = d["commit"], d["result"]
+    if not r["valid"]:
+        return "\n".join([f"{c['short']}  {c['subject']}   (measurement unavailable)",
+                          *_warnings(d)])
     out = [f"{c['short']}  {c['subject']}   (python {r['python']}, {r['runs']} runs)"]
     out.append(f"  {'unit':44} {'peak':>10} {'spread':>9} {'retained':>10}  outcome")
     for name, u in r["units"].items():

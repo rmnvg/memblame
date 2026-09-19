@@ -93,6 +93,9 @@ export function runMemblame(req: RunRequest): Running {
       }
       if (parsed.kind === "error") {
         reject(new Error(parsed.error));
+      } else if (code !== 0 && code !== 3) {
+        const details = [parsed.message, ...(parsed.warnings ?? [])].filter(Boolean).join("\n");
+        reject(new Error(`memblame could not complete the measurement (exit ${code}):\n${details || stderr.slice(-2000)}`));
       } else {
         resolve(parsed);
       }

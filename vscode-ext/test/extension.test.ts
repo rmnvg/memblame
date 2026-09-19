@@ -1,14 +1,67 @@
 // Unit tests for the vscode-free modules. Run with: npm test
 import * as assert from "node:assert/strict";
+import * as cp from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { buildArgs, parseProgress, runMemblame } from "../src/cli";
 import { chartSvg, esc, mb, niceStep, renderHtml } from "../src/render";
-import { findTests, isTestFile, locateScope, moduleName, suggestWorkloads } from "../src/workload";
+import { findTests, isTestFile, locateScope, moduleName, pytestWorkload, quoteWorkloadArg, suggestWorkloads } from "../src/workload";
 
 const fixture = (name: string) =>
   JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "test", "fixtures", `${name}.json`), "utf8"));
+
+const bundled = path.join(__dirname, "..", "..", "python");
+const python = process.env.MEMBLAME_TEST_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
+
+test("generated script and pytest workloads round-trip through the Python parser", () => {
+  const file = "bench scripts/it's a benchmark.py";
+  const testFile = "test folder/test_example.py";
+  const nodeId = `test_example[a 'single' and "double" quote]`;
+  const workloads = [
+    suggestWorkloads(file, "x = 1", 0)[0].workload,
+    ...suggestWorkloads(testFile, "def test_example(): pass", 0).map((s) => s.workload),
+    pytestWorkload(testFile, nodeId),
+    `script:${quoteWorkloadArg("C:\\my dir\\run.py")}`,
+  ];
+  const expected = [[file], [`${testFile}::test_example`], [testFile], [`${testFile}::${nodeId}`], ["C:\\my dir\\run.py"]];
+  const code = [
+    "import json, sys",
+    "from memblame import measure",
+    "workloads = json.loads(sys.argv[1])",
+    "for platform in ('posix', 'nt'):",
+    "    measure.os.name = platform",
+    "    print(json.dumps([measure.split_args(w.partition(':')[2]) for w in workloads]))",
+  ].join("\n");
+  const output = cp.execFileSync(python, ["-c", code, JSON.stringify(workloads)], {
+    env: { ...process.env, PYTHONPATH: bundled }, encoding: "utf8",
+  });
+  for (const line of output.trim().split(/\r?\n/)) {
+    assert.deepEqual(JSON.parse(line), expected);
+  }
+});
+
+test("generated script workload runs with spaces; a crashed workload is rejected", async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mb-path-test-"));
+  try {
+    cp.execFileSync("git", ["init", "-q", repo]);
+    cp.execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+      "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "initial"]);
+    const rel = "bench scripts/it's a benchmark.py";
+    fs.mkdirSync(path.join(repo, "bench scripts"));
+    fs.writeFileSync(path.join(repo, rel), "x = bytearray(100000)\n");
+    const workload = suggestWorkloads(rel, "x = 1", 0)[0].workload;
+    const request = { python, repo, bundledPath: bundled,
+      args: ["run", "--no-cache", "--runs", "1", ...buildArgs({ workload, python, repo })] };
+    const result = await runMemblame(request).result;
+    assert.equal(result.result.units.workload.outcome, "passed");
+    fs.writeFileSync(path.join(repo, rel), "import os\nos._exit(7)\n");
+    await assert.rejects(runMemblame(request).result, /runner crashed \(exit 7\)/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
 
 test("parseProgress", () => {
   assert.deepEqual(parseProgress("memblame: [3/10] measuring abc 'x'"), { message: "measuring abc 'x'", step: [3, 10] });

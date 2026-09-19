@@ -4,7 +4,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { buildArgs, runMemblame } from "./cli";
 import { mb, renderHtml } from "./render";
-import { findTests, isTestFile, locateScope, suggestWorkloads } from "./workload";
+import { findTests, isTestFile, locateScope, pytestWorkload, suggestWorkloads } from "./workload";
 
 let panel: vscode.WebviewPanel | undefined;
 let state: vscode.ExtensionContext | undefined;
@@ -52,7 +52,7 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
         return;
       }
       const rel = path.relative(canon(repo), canon(arg.file)).split(path.sep).join("/");
-      workload = `pytest:${rel}::${arg.test}`;
+      workload = pytestWorkload(rel, arg.test);
     }
     if (!(await saveOrContinue())) {
       return;

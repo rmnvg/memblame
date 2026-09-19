@@ -11,12 +11,11 @@ Working name: `memblame`. Change it any time.
 | 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
-| 5 VS Code extension | done; VSIX builds (~400 KB) | 12 node tests + 7-step integration test in real VS Code 1.131 |
+| 5 VS Code extension | done; VSIX builds (~400 KB) | 14 node tests + 7-step integration test in real VS Code 1.131 |
 | 6 Extras | not started | section 12 |
 
-Test suites: `pytest` (69 tests, ~140 s, order-independent under pytest-randomly; 94 % line
-coverage including the runner subprocesses),
-`ruff check src tests`, `cd vscode-ext && npm test` (12), `npm run test:integration`
+Test suites: `pytest` (96 tests, ~120 s in the latest local macOS run),
+`ruff check src tests`, `cd vscode-ext && npm test` (14), `npm run test:integration`
 (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
 CI (`.github/workflows/ci.yml`): Linux/macOS/Windows × Python 3.9/3.12/3.14 (all green,
@@ -144,6 +143,12 @@ side of a comparison has a peak snapshot, the other is treated as empty and the 
 that the deltas are upper bounds. Stale worktrees from killed runs are removed via a pid file.
 
 **Contract.** `--json` output has `"schema": 1`. Exit code 3 = significant increase found.
+Exit code 1 = error or incomplete measurement, including failed workloads, invalid
+environments and inconsistent repeated samples. Bisect may still succeed after skipping
+broken intermediate commits, but its endpoints must be measurable and not failing.
+Absolute repo-local script paths are normalized to follow each selected checkout; external
+scripts stay fixed. Fast samples must agree on unit names, outcomes and exit codes before
+aggregation. Environment checks cover every sample, and attribution is validated before merging.
 
 ## 5. Repo layout (as built)
 
@@ -276,20 +281,22 @@ inside the function that needs it would fix it). Re-check at the current HEAD be
 
 ## 12. Next steps / publishing checklist
 
-Must do before publishing (needs you):
+Release checks:
 1. Pick the final name and check that it is free on PyPI and the VS Code Marketplace.
-2. Create a Marketplace publisher; set `publisher` and `repository.url` in
-   `vscode-ext/package.json` (currently `memblame` / `OWNER`), set the copyright holder in
-   `LICENSE`.
-3. Push to GitHub, add CI (pytest + ruff on Linux/macOS/**Windows**, extension tests).
+2. Verify ownership of the configured Marketplace publisher (`memblame`) and review the
+   repository URL (`https://github.com/rmnvg/memblame`) and license metadata before release.
+3. Verify CI passes for the release commit. `.github/workflows/ci.yml` already defines
+   Linux/macOS/Windows Python tests, Ruff, extension unit tests, VSIX packaging and a real
+   VS Code integration test.
 4. `python -m build && twine upload` for the CLI; `npx vsce publish` (and Open VSX for
    Cursor/VSCodium users) for the extension.
 5. Record the GIF.
 
 Worth doing next (in order of value):
-1. Windows run of the test suite (assumption 4).
+1. Verify Windows CI results for the release commit and test the extension interactively
+   on Windows (including interpreter selection, paths with spaces and cancellation).
 2. A GitHub Action: `memblame diff origin/main HEAD` on PRs, comment with the finding,
-   fail on exit code 3.
+   fail on exit code 3 or an incomplete/error result (exit code 1).
 3. Pytest-plugin-style workload: "all tests in a directory" is supported, but the report
    should rank tests by change.
 4. memray backend for native memory (Linux/macOS).
