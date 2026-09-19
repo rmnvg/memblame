@@ -238,13 +238,15 @@ against the diff.
 | repo, range | commits / measured | finding | verified cause |
 |---|---|---|---|
 | markdown-it-py `v4.0.0..HEAD` (exhaustive) | 33 / 33 | none | largest step +36 KB on 7.5 MB (a new preset); no false positives |
-| markdown-it-py `v2.0.0..HEAD` | 137 / 19 | `f52249e` peak −1.6 MB (−17 %), direct `StateBase.src` | removed `tuple(ord(c) for c in src)` in the setter |
-| | | `6649229` peak −0.5, retained −0.7 MB | `Token` → dataclass |
-| | | `145a484` peak −0.3 MB (indirect) | `__slots__` on dataclasses (the saving shows up in callers) |
-| tomlkit `0.11.0..HEAD` | 234 / 21 | `231370c` peak **−66 %** (59.5 → 20.1 MB), direct `Source.__init__` | stops materializing the source |
-| | | `ae1b679` peak **+4.4 %**, direct `Container.__init__` | a new `dict` + `set` per `Container` (a speed/memory trade-off) |
-| | | `a766d3a` retained +0.8 MB, module level `items.py` | new `import dataclasses` + generated code |
-| pyparsing `3.1.0..HEAD` | 511 / 11 | `cd081ef` retained +1.6 MB, module level `testing.py` | `import unittest` added; `pyparsing/__init__` imports `testing`, so **every `import pyparsing` now loads unittest (+1.46 MB, +23 %)**, still true at HEAD |
+| markdown-it-py `v2.0.0..HEAD` | 137 / 19 | `f52249e` peak −1.6 MB (−15 %), direct `StateBase.src` | removed `tuple(ord(c) for c in src)` in the setter |
+| | | `6649229` peak −4 %, retained −13 % | `Token` → dataclass |
+| | | `145a484` peak −3 % (indirect) | `__slots__` on dataclasses (the saving shows up in callers) |
+| tomlkit `0.11.0..HEAD` | 234 / 21 | `231370c` peak **−65 %** (60.6 → 21.1 MB), direct `Source.__init__` | stops materializing the source |
+| | | `ae1b679` peak **+3.9 %**, direct `Container.__init__` | a new `dict` + `set` per `Container` (a speed/memory trade-off) |
+| | | `a766d3a` retained +1.0 MB (+47 %), module level `items.py` | new `import dataclasses` (+ `inspect`) |
+| pyparsing `3.1.0..HEAD` | 511 / 11 | `cd081ef` retained +1.56 MB (+22 %), hot line `testing.py:6` | `import unittest` added; `pyparsing/__init__` imports `testing`, so **every `import pyparsing` now loads unittest**, still true at HEAD |
+
+Numbers above are from the final engine (after the review pass), all with 0 warnings.
 
 Bugs found this way and fixed: old-side blame for improvements, property getter/setter
 ranges, repeated warnings, slow hook-only peak capture, and (via the VS Code integration test)

@@ -124,11 +124,12 @@ Adaptive `range` runs with a fixed benchmark script, each finding checked agains
 
 | project, range | measured | finding | cause (verified in the diff) |
 |---|---|---|---|
-| tomlkit `0.11.0..HEAD` (233 commits) | 21 | `231370c` peak **−66 %** (59.5 → 20.1 MB), direct in `Source.__init__` | source is indexed instead of materialized |
-| | | `ae1b679` peak **+4.4 %**, direct in `Container.__init__` | a new `dict` and `set` on every `Container` |
-| pyparsing `3.1.0..HEAD` (510 commits) | 11 | `cd081ef` retained **+1.6 MB** at module level in `pyparsing/testing.py` | `import unittest` added; since 3.3.0 every `import pyparsing` loads `unittest` (+23 % import memory) |
-| markdown-it-py `v2.0.0..HEAD` (136 commits) | 19 | `f52249e` peak **−17 %**, direct in `StateBase.src` setter | removed a per-character `tuple(ord(c) ...)` |
-| | | `6649229`, `145a484` peak −0.5 / −0.3 MB | `Token` became a dataclass, then got `__slots__` |
+| tomlkit `0.11.0..HEAD` (233 commits) | 21 | `231370c` peak **−65 %** (60.6 → 21.1 MB), direct in `Source.__init__` | source is indexed instead of materialized |
+| | | `ae1b679` peak **+3.9 %**, direct in `Container.__init__` | a new `dict` and `set` on every `Container` |
+| | | `a766d3a` retained **+1.0 MB** at module level in `items.py` | new `import dataclasses` (pulls in `inspect`) |
+| pyparsing `3.1.0..HEAD` (510 commits) | 11 | `cd081ef` retained **+1.56 MB (+22 %)**, hot line `pyparsing/testing.py:6` | `import unittest` added; since 3.3.0 every `import pyparsing` loads `unittest` |
+| markdown-it-py `v2.0.0..HEAD` (136 commits) | 19 | `f52249e` peak **−15 %**, direct in `StateBase.src` setter | removed a per-character `tuple(ord(c) ...)` |
+| | | `6649229`, `145a484` peak −4 % / −3 % | `Token` became a dataclass, then got `__slots__` |
 
 No chore, docs or CI commit was flagged. On the markdown-it-py range, commit-to-commit
 noise was under 0.05 % of the peak. See `PROJECT.md` for the full log.
