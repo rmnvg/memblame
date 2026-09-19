@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
 import { buildArgs, parseProgress, runMemblame } from "../src/cli";
-import { chartSvg, esc, mb, renderHtml } from "../src/render";
+import { chartSvg, esc, mb, niceStep, renderHtml } from "../src/render";
 import { findTests, isTestFile, moduleName, suggestWorkloads } from "../src/workload";
 
 const fixture = (name: string) =>
@@ -80,6 +80,12 @@ test("diff and bisect reports", () => {
   assert.match(bisect, /First bad commit/);
   assert.match(bisect, /include raw payload in rows/);
   assert.doesNotMatch(bisect, /undefined|NaN/);
+});
+
+test("nice axis steps", () => {
+  assert.equal(niceStep(14_400_000), 20_000_000);
+  assert.equal(niceStep(3_000), 5_000);
+  assert.equal(niceStep(1_000_000), 1_000_000);
 });
 
 test("chart handles gaps and a single point", () => {

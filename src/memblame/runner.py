@@ -13,6 +13,8 @@ Spec (JSON):
     nframe     tracemalloc traceback depth
     hints      {unit name: peak bytes from a previous run} -> enables peak attribution
     attribute  false -> numbers only (no snapshots), for cheap timing runs
+    peak_mode  "poll" (cheap background thread, misses sub-millisecond peaks) or "hook"
+               (profile hook on every return: exact, but 10x+ slower on call-heavy code)
     out        path to write the result JSON to
 """
 
@@ -33,6 +35,7 @@ from collections import defaultdict
 SCHEMA = 1
 HINT_FRACTION = 0.9  # start snapshotting once memory reaches 90% of the known peak
 SNAPSHOT_STEP = 1.02  # ...then only on a new high 2% above the last snapshot (~6 snapshots)
+POLL_INTERVAL = 0.0005  # seconds between polls in "poll" peak mode
 MIN_FUNC_BYTES = 1024
 MAX_LINES = 30
 SKIP_DIRS = {".venv", "venv", "env", "site-packages", ".tox", ".nox", "node_modules", ".git"}
@@ -126,7 +129,8 @@ class Attributor:
             scope = innermost_scope(self._scope_cache[rel], lineno)
             qualname = scope[3] if scope else "<module>"
             fid = f"{rel}::{qualname}"
-            if fid not in self.functions:
+            info = self.functions.get(fid)
+            if info is None:
                 self.functions[fid] = {
                     "file": rel,
                     "qualname": qualname,
@@ -134,6 +138,10 @@ class Attributor:
                     "start": scope[1] if scope else 1,
                     "end": scope[2] if scope else 1,
                 }
+                if scope:  # a property getter and setter share one qualname: cover both
+                    same = [o for o in self._scope_cache[rel] if o[3] == qualname]
+                    self.functions[fid]["start"] = min(o[1] for o in same)
+                    self.functions[fid]["end"] = max(o[2] for o in same)
             result = (fid, rel)
         self._frame_cache[key] = result
         return result
@@ -213,9 +221,12 @@ class Meter:
     """Measures one unit (a whole call/script, or one pytest test)."""
 
     def __init__(self, nframe: int, attributor: Attributor, hints: dict[str, int],
-                 attribute: bool = True):
+                 attribute: bool = True, peak_mode: str = "poll"):
         self.nframe = nframe
         self.attribute = attribute
+        self.peak_mode = peak_mode
+        self._poller: threading.Thread | None = None
+        self._stop_poll = threading.Event()
         self.attr = attributor
         self.hints = hints
         self.units: list[dict] = []
@@ -225,12 +236,19 @@ class Meter:
         self._snapshot: tracemalloc.Snapshot | None = None
         self._threshold = 0
 
+    def _check(self) -> None:
+        current = tracemalloc.get_traced_memory()[0]
+        if current >= self._threshold and current > self._best * SNAPSHOT_STEP:
+            self._best = current
+            self._snapshot = tracemalloc.take_snapshot()
+
     def _hook(self, frame, event, arg):  # sys.setprofile callback
         if event == "return" or event == "c_return":
-            current = tracemalloc.get_traced_memory()[0]
-            if current >= self._threshold and current > self._best * SNAPSHOT_STEP:
-                self._best = current
-                self._snapshot = tracemalloc.take_snapshot()
+            self._check()
+
+    def _poll(self) -> None:
+        while not self._stop_poll.wait(POLL_INTERVAL):
+            self._check()
 
     def start(self, name: str) -> None:
         self._name = name
@@ -241,14 +259,26 @@ class Meter:
         tracemalloc.start(self.nframe)
         if hint:
             self._threshold = int(hint * HINT_FRACTION)
-            threading.setprofile(self._hook)
-            sys.setprofile(self._hook)
+            if self.peak_mode == "hook":
+                threading.setprofile(self._hook)
+                sys.setprofile(self._hook)
+            else:
+                self._stop_poll.clear()
+                self._switch = sys.getswitchinterval()
+                sys.setswitchinterval(POLL_INTERVAL)  # let the poller get the GIL often
+                self._poller = threading.Thread(target=self._poll, daemon=True)
+                self._poller.start()
         self._t0 = time.perf_counter()
 
     def stop(self, outcome: str, error: str | None = None) -> None:
         duration = time.perf_counter() - self._t0
         sys.setprofile(None)
         threading.setprofile(None)  # type: ignore[arg-type]
+        if self._poller is not None:
+            self._stop_poll.set()
+            self._poller.join()
+            self._poller = None
+            sys.setswitchinterval(self._switch)
         peak = tracemalloc.get_traced_memory()[1]
         gc.collect()
         end_bytes = tracemalloc.get_traced_memory()[0]
@@ -381,7 +411,8 @@ def run(spec: dict) -> dict:
     dirs = _setup_paths(root, spec.get("pythonpath"))
     attributor = Attributor(root, exclude_files={__file__})
     meter = Meter(int(spec.get("nframe", 16)), attributor, spec.get("hints") or {},
-                  attribute=spec.get("attribute", True))
+                  attribute=spec.get("attribute", True),
+                  peak_mode=spec.get("peak_mode", "poll"))
     kind, _, target = spec["workload"].partition(":")
     exit_code = 0
     if kind == "call":
@@ -401,6 +432,7 @@ def run(spec: dict) -> dict:
         "platform": sys.platform,
         "nframe": meter.nframe,
         "hinted": bool(spec.get("hints")),
+        "peak_mode": meter.peak_mode,
         "env_problems": check_environment(root, dirs),
         "exit_code": exit_code,
         "units": meter.units,

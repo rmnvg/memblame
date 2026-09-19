@@ -37,10 +37,12 @@ export function verdictHtml(v: any): string {
   if (!v || v.kind === "none") {
     return "";
   }
+  const note = v.note ? `<p class="sub">Note: ${esc(v.note)}</p>` : "";
   if (v.kind === "unattributed") {
-    return `<p class="verdict muted">Not attributed: ${esc(v.reason ?? "no attribution data")}</p>`;
+    return `<p class="verdict muted">Not attributed: ${esc(v.reason ?? "no attribution data")}</p>${note}`;
   }
-  const where = link(v.file, v.line, `${v.qualname}()  ${v.file}:${v.line}`);
+  const name = v.qualname === "<module>" ? "module level" : `${v.qualname}()`;
+  const where = link(v.file, v.line, `${name}  ${v.file}:${v.line}`);
   const parts = [
     `<p class="verdict"><span class="tag ${v.kind}">${v.kind}</span> ${where} <b>${mb(v.cum_delta, true)}</b></p>`,
   ];
@@ -60,7 +62,7 @@ export function verdictHtml(v: any): string {
   if (alloc.length) {
     parts.push(`<p class="sub">Memory is allocated at</p><ul class="lines">${alloc.join("")}</ul>`);
   }
-  return parts.join("");
+  return parts.join("") + note;
 }
 
 export function functionsTable(fns: any[]): string {
@@ -99,20 +101,27 @@ interface Series {
   end: (number | null)[];
 }
 
+/** 1, 2 or 5 times a power of ten: gives round axis labels. */
+export function niceStep(raw: number): number {
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  const f = raw / pow;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * pow;
+}
+
 export function chartSvg(points: any[], unit: string, flaggedPeak: Set<number>, flaggedEnd: Set<number> = new Set()): string {
-  const W = 760, H = 240, L = 64, R = 16, T = 16, B = 36;
+  const W = 760, H = 240, L = 64, R = 36, T = 16, B = 36;
   const s: Series = {
     peak: points.map((p) => p.units?.[unit]?.peak?.median ?? null),
     end: points.map((p) => p.units?.[unit]?.end?.median ?? null),
   };
   const all = [...s.peak, ...s.end].filter((v): v is number => v !== null);
-  const max = Math.max(1, ...all) * 1.1;
+  const step = niceStep(Math.max(1, ...all) / 4);
+  const max = step * Math.max(1, Math.ceil((Math.max(1, ...all) * 1.05) / step));
   const n = points.length;
   const x = (i: number) => L + (n <= 1 ? (W - L - R) / 2 : (i * (W - L - R)) / (n - 1));
   const y = (v: number) => T + (H - T - B) * (1 - v / max);
   const grid: string[] = [];
-  for (let k = 0; k <= 4; k++) {
-    const v = (max / 4) * k;
+  for (let v = 0; v <= max + step / 2; v += step) {
     grid.push(
       `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>` +
         `<text class="axis" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${esc(mb(v))}</text>`,

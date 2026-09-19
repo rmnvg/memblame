@@ -19,6 +19,7 @@ FUNC_SHARE = 0.10  # a function must explain >= 10% of the unit change to be a c
 TIE_SHARE = 0.90  # changed functions within 90% of the best growth are treated as tied
 MAX_FUNCS = 15
 NOISE_BYTES = 4096  # per-function differences below this are interpreter noise
+TRUNCATED_NOTE = 0.05  # mention truncated stacks when they hide more than 5% of the memory
 
 
 def noise_band(a: dict, b: dict) -> int:
@@ -27,29 +28,41 @@ def noise_band(a: dict, b: dict) -> int:
 
 
 class ChangeMap:
-    """Which functions (at the new revision) a set of diff hunks touches."""
+    """Which functions a set of diff hunks touches, on either side of the diff."""
 
-    def __init__(self, repo: Path, head: str, hunks: list[git.Hunk]):
+    def __init__(self, repo: Path, base: str, head: str, hunks: list[git.Hunk]):
         self.hunks = hunks
-        self.by_file: dict[str, list[git.Hunk]] = {}
+        self.by_file: dict[str, list[git.Hunk]] = {}  # new-side path
+        self.by_old_file: dict[str, list[git.Hunk]] = {}
         for h in hunks:
             self.by_file.setdefault(h.file, []).append(h)
-        self._repo, self._head = repo, head
-        self._scopes: dict[str, list] = {}
+            if h.old_file:
+                self.by_old_file.setdefault(h.old_file, []).append(h)
+        self._repo, self._base, self._head = repo, base, head
+        self._scopes: dict[tuple[str, str], list] = {}
 
-    def scopes(self, rel: str) -> list:
-        if rel not in self._scopes:
-            src = git.file_at(self._repo, self._head, rel)
-            self._scopes[rel] = scopes_from_source(src) if src else []
-        return self._scopes[rel]
+    def scopes(self, rel: str, rev: str | None = None) -> list:
+        key = (rev or self._head, rel)
+        if key not in self._scopes:
+            src = git.file_at(self._repo, key[0], rel)
+            self._scopes[key] = scopes_from_source(src) if src else []
+        return self._scopes[key]
 
-    def hunks_for(self, info: dict) -> list[git.Hunk]:
-        """Hunks intersecting a function's lines. '<module>' matches top-level edits."""
+    def hunks_for(self, info: dict | None, side: str = "new") -> list[git.Hunk]:
+        """Hunks intersecting a function's lines on one side of the diff.
+
+        '<module>' matches edits outside any function. The old side matters for memory that
+        went *down*: the code that allocated it has often been deleted.
+        """
+        if info is None:
+            return []
+        old = side == "old"
+        rev = self._base if old else self._head
         out = []
-        for h in self.by_file.get(info["file"], []):
-            lo, hi = h.new_range
+        for h in (self.by_old_file if old else self.by_file).get(info["file"], []):
+            lo, hi = h.old_range if old else h.new_range
             if info["qualname"] == "<module>":
-                scopes = self.scopes(info["file"])
+                scopes = self.scopes(info["file"], rev)
                 if any(innermost_scope(scopes, ln) is None for ln in range(lo, hi + 1)):
                     out.append(h)
             elif lo <= info["end"] and hi >= info["start"]:
@@ -74,8 +87,8 @@ def _by_id(summary: dict | None) -> dict[str, dict]:
     return {f["id"]: f for f in summary["functions"]} if summary else {}
 
 
-def compare_metric(a_unit: dict, b_unit: dict, metric: str, b_functions: dict,
-                   changes: ChangeMap) -> dict:
+def compare_metric(a_unit: dict, b_unit: dict, metric: str, a_functions: dict,
+                   b_functions: dict, changes: ChangeMap) -> dict:
     stat_key, summary_key = METRICS[metric]
     a, b = a_unit[stat_key], b_unit[stat_key]
     delta = b["median"] - a["median"]
@@ -98,15 +111,19 @@ def compare_metric(a_unit: dict, b_unit: dict, metric: str, b_functions: dict,
     sign = 1 if delta >= 0 else -1
     rows = []
     for fid in set(fa) | set(fb):
-        info = b_functions.get(fid) or {"id": fid, "file": fid.split("::")[0],
-                                        "qualname": fid.split("::")[-1], "line": 1,
-                                        "start": 1, "end": 1}
+        a_info, b_info = a_functions.get(fid), b_functions.get(fid)
+        info = b_info or a_info or {"id": fid, "file": fid.split("::")[0],
+                                    "qualname": fid.split("::")[-1], "line": 1,
+                                    "start": 1, "end": 1}
         x, y = fa.get(fid, {}), fb.get(fid, {})
         cum = y.get("cumulative", 0) - x.get("cumulative", 0)
         slf = y.get("self", 0) - x.get("self", 0)
         if abs(cum) < NOISE_BYTES and abs(slf) < NOISE_BYTES:
             continue
-        hunks = changes.hunks_for(info) if fid in fb else []
+        hunks = changes.hunks_for(b_info, "new")
+        for h in changes.hunks_for(a_info, "old"):
+            if h not in hunks:
+                hunks.append(h)
         rows.append({
             "id": fid, "file": info["file"], "qualname": info["qualname"],
             "line": info["line"], "cum_delta": cum, "self_delta": slf,
@@ -116,17 +133,19 @@ def compare_metric(a_unit: dict, b_unit: dict, metric: str, b_functions: dict,
     rows.sort(key=lambda r: (-sign * r["cum_delta"], -sign * r["self_delta"]))
     out["functions"] = rows[:MAX_FUNCS]
     out["coverage"] = {"base": a_sum.get("coverage"), "head": b_sum.get("coverage")}
-    out["verdict"] = _verdict(rows, delta, sign, b_sum) if out["significant"] else {"kind": "none"}
+    # Where the memory lives: at head for growth, at base for memory that went away.
+    where = b_sum if sign > 0 else a_sum
+    out["verdict"] = _verdict(rows, delta, sign, where) if out["significant"] else {"kind": "none"}
     return out
 
 
-def _verdict(rows: list[dict], delta: int, sign: int, b_sum: dict) -> dict:
+def _verdict(rows: list[dict], delta: int, sign: int, where: dict) -> dict:
     floor = max(FUNC_SHARE * abs(delta), MIN_BAND)
     candidates = [r for r in rows if sign * r["cum_delta"] >= floor]
     if not candidates:
-        return {"kind": "unattributed",
-                "reason": "no project function explains the change (native memory or "
-                          "allocations outside the project?)"}
+        return _with_note({"kind": "unattributed",
+                           "reason": "no project function explains the change (native memory "
+                                     "or allocations outside the project?)"}, where)
     changed = [r for r in candidates if r["changed"]]
     if changed:
         best = max(sign * r["cum_delta"] for r in changed)
@@ -138,21 +157,31 @@ def _verdict(rows: list[dict], delta: int, sign: int, b_sum: dict) -> dict:
     else:
         pick = max(candidates, key=lambda r: sign * r["self_delta"])
         kind = "indirect"
-    big = [ln for ln in b_sum["lines"] if ln["bytes"] >= 0.01 * abs(pick["cum_delta"])]
+    big = [ln for ln in where["lines"] if ln["bytes"] >= 0.01 * abs(pick["cum_delta"])]
     lines = [ln for ln in big if ln["file"] == pick["file"]][:5]
     # When the blamed function only *keeps* memory that is allocated elsewhere (e.g. a new
     # cache around an unchanged loader), point at the biggest allocation sites too.
     allocated_at = [] if abs(pick["self_delta"]) >= 0.5 * abs(pick["cum_delta"]) else big[:3]
-    return {"kind": kind, "function": pick["id"], "file": pick["file"],
-            "qualname": pick["qualname"], "line": pick["line"], "cum_delta": pick["cum_delta"],
-            "self_delta": pick["self_delta"], "hunks": pick["hunks"], "hot_lines": lines,
-            "allocated_at": allocated_at}
+    verdict = {"kind": kind, "function": pick["id"], "file": pick["file"],
+               "qualname": pick["qualname"], "line": pick["line"],
+               "cum_delta": pick["cum_delta"], "self_delta": pick["self_delta"],
+               "hunks": pick["hunks"], "hot_lines": lines, "allocated_at": allocated_at}
+    return _with_note(verdict, where) if kind == "indirect" else verdict
+
+
+def _with_note(verdict: dict, where: dict) -> dict:
+    """Explain weak attribution caused by stacks deeper than the traceback limit."""
+    share = where.get("truncated", 0) / max(where.get("total", 0), 1)
+    if share > TRUNCATED_NOTE:
+        verdict["note"] = (f"{share:.0%} of this memory had no project frame within the traceback "
+                           "depth (deep library stacks); a larger --nframe may attribute it")
+    return verdict
 
 
 def compare(repo: Path, base: dict, head: dict, base_sha: str, head_sha: str,
             metrics: tuple[str, ...] = ("peak", "retained")) -> dict:
     """Compare two `measure()` results. `head_sha` may be git.WORKTREE."""
-    changes = ChangeMap(repo, head_sha, git.diff_hunks(repo, base_sha, head_sha))
+    changes = ChangeMap(repo, base_sha, head_sha, git.diff_hunks(repo, base_sha, head_sha))
     units = []
     for name, b_unit in head["units"].items():
         a_unit = base["units"].get(name)
@@ -163,8 +192,8 @@ def compare(repo: Path, base: dict, head: dict, base_sha: str, head_sha: str,
             "name": name,
             "status": "compared",
             "outcome": {"base": a_unit["outcome"], "head": b_unit["outcome"]},
-            "metrics": [compare_metric(a_unit, b_unit, m, head["functions"], changes)
-                        for m in metrics],
+            "metrics": [compare_metric(a_unit, b_unit, m, base["functions"], head["functions"],
+                                       changes) for m in metrics],
         })
     for name in base["units"]:
         if name not in head["units"]:

@@ -146,6 +146,7 @@ class Hunk:
     old_len: int
     new_start: int
     new_len: int
+    old_file: str = ""  # path on the old side ("" for added files)
 
     @property
     def new_range(self) -> tuple[int, int]:
@@ -153,6 +154,13 @@ class Hunk:
         if self.new_len == 0:
             return (self.new_start, self.new_start + 1)
         return (self.new_start, self.new_start + self.new_len - 1)
+
+    @property
+    def old_range(self) -> tuple[int, int]:
+        """Inclusive old-side line range. Pure additions touch the lines around the insert."""
+        if self.old_len == 0:
+            return (self.old_start, self.old_start + 1)
+        return (self.old_start, self.old_start + self.old_len - 1)
 
     def header(self) -> str:
         return f"@@ -{self.old_start},{self.old_len} +{self.new_start},{self.new_len} @@"
@@ -164,17 +172,21 @@ class Hunk:
 def parse_hunks(diff_text: str) -> list[Hunk]:
     hunks: list[Hunk] = []
     current: str | None = None
+    old = ""
     for line in diff_text.splitlines():
-        if line.startswith("+++ "):
+        if line.startswith("--- "):
+            source = line[4:].strip()
+            old = "" if source == "/dev/null" else source.removeprefix("a/")
+        elif line.startswith("+++ "):
             target = line[4:].strip()
-            current = None if target == "/dev/null" else target.removeprefix("b/")
+            current = old if target == "/dev/null" else target.removeprefix("b/")
         elif line.startswith("@@") and current is not None:
             m = _HUNK_RE.match(line)
             if m:
                 a, b, c, d = m.groups()
                 hunks.append(
                     Hunk(current, int(a), 1 if b is None else int(b), int(c),
-                         1 if d is None else int(d))
+                         1 if d is None else int(d), old)
                 )
     return hunks
 

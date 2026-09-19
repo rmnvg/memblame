@@ -1,4 +1,5 @@
 import * as crypto from "crypto";
+import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { buildArgs, runMemblame } from "./cli";
@@ -16,7 +17,28 @@ const hotDecoration = vscode.window.createTextEditorDecorationType({
   isWholeLine: true,
 });
 
-export function activate(ctx: vscode.ExtensionContext) {
+const canonCache = new Map<string, string>();
+/** Resolve symlinks (e.g. macOS /var -> /private/var): git reports real paths, editors may not. */
+function canon(p: string): string {
+  let c = canonCache.get(p);
+  if (c === undefined) {
+    try {
+      c = fs.realpathSync.native(p);
+    } catch {
+      c = p;
+    }
+    canonCache.set(p, c);
+  }
+  return c;
+}
+
+/** Returned from activate(); used by the integration tests. */
+export interface MemBlameApi {
+  lastResult(): any;
+  reportHtml(): string | undefined;
+}
+
+export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
   const bundled = path.join(ctx.extensionPath, "python");
   const cmd = (id: string, fn: (...a: any[]) => any) => ctx.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
@@ -36,29 +58,33 @@ export function activate(ctx: vscode.ExtensionContext) {
     }
     await runCommand(bundled, head === "WORKTREE" ? ["diff", base] : ["diff", base, head]);
   });
-  cmd("memblame.analyzeRange", async () => {
+  cmd("memblame.analyzeRange", async (rangeArg?: string) => {
     const def = vscode.workspace.getConfiguration("memblame").get<string>("defaultRange") || "HEAD~20..HEAD";
-    const range = await vscode.window.showInputBox({
-      prompt: "Commit range to analyze (every first-parent commit is measured; results are cached)",
-      value: def,
-      validateInput: (v) => (v.includes("..") ? undefined : "use BASE..HEAD, e.g. main~20..main"),
-    });
+    const range =
+      rangeArg ??
+      (await vscode.window.showInputBox({
+        prompt: "Commit range (BASE..HEAD). Measures both ends and only subdivides where memory changed; results are cached.",
+        value: def,
+        validateInput: (v) => (v.includes("..") ? undefined : "use BASE..HEAD, e.g. main~20..main"),
+      }));
     if (range) {
       await runCommand(bundled, ["range", range]);
     }
   });
-  cmd("memblame.findRegression", async () => {
+  cmd("memblame.findRegression", async (goodArg?: string, thresholdArg?: string) => {
     const repo = await repoRoot();
     if (!repo) {
       return;
     }
-    const good = await pickCommit(repo, "Last GOOD commit (memory was fine here)");
+    const good = goodArg ?? (await pickCommit(repo, "Last GOOD commit (memory was fine here)"));
     if (!good) {
       return;
     }
-    const threshold = await vscode.window.showInputBox({
-      prompt: "Threshold (optional): 200MB, +20MB or +10%. Empty = any significant increase over the good commit",
-    });
+    const threshold =
+      thresholdArg ??
+      (await vscode.window.showInputBox({
+        prompt: "Threshold (optional): 200MB, +20MB or +10%. Empty = any significant increase over the good commit",
+      }));
     if (threshold === undefined) {
       return;
     }
@@ -83,6 +109,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.window.onDidChangeVisibleTextEditors(refreshDecorations),
     { dispose: () => running?.cancel() },
   );
+
+  const api: MemBlameApi = { lastResult: () => lastResult, reportHtml: () => panel?.webview.html };
 
   async function runCommand(bundledPath: string, args: string[], workloadArg?: string) {
     if (running) {
@@ -147,6 +175,8 @@ export function activate(ctx: vscode.ExtensionContext) {
       },
     );
   }
+
+  return api;
 }
 
 export function deactivate() {
@@ -304,14 +334,14 @@ function applyAnnotations(result: any) {
     if (!v?.file) {
       continue;
     }
-    const abs = path.join(repo, v.file);
+    const abs = canon(path.join(repo, v.file));
     const since = f.commit ? ` at ${String(f.commit).slice(0, 7)}` : result.kind === "diff" ? ` vs ${result.base?.short ?? "base"}` : "";
     const title = `$(${f.delta > 0 ? "arrow-up" : "arrow-down"}) ${f.metric} memory ${mb(f.delta, true)}${since} · ${v.kind} · ${f.unit}`;
     const list = annotations.get(abs) ?? [];
     list.push({ line: v.line, title, hover: `MemBlame: ${v.function}` });
     annotations.set(abs, list);
     for (const hl of [...(v.hot_lines ?? []), ...(v.allocated_at ?? [])]) {
-      const habs = path.join(repo, hl.file);
+      const habs = canon(path.join(repo, hl.file));
       const hs = hotLines.get(habs) ?? [];
       if (!hs.some((h) => h.line === hl.line)) {
         hs.push({ line: hl.line, text: `◀ ${mb(hl.bytes)} live at ${f.metric} (memblame)` });
@@ -325,7 +355,7 @@ function applyAnnotations(result: any) {
 
 function refreshDecorations() {
   for (const ed of vscode.window.visibleTextEditors) {
-    const hs = hotLines.get(ed.document.uri.fsPath) ?? [];
+    const hs = hotLines.get(canon(ed.document.uri.fsPath)) ?? [];
     ed.setDecorations(
       hotDecoration,
       hs
@@ -340,7 +370,7 @@ class LensProvider implements vscode.CodeLensProvider {
 
   provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
     const lenses: vscode.CodeLens[] = [];
-    for (const a of annotations.get(doc.uri.fsPath) ?? []) {
+    for (const a of annotations.get(canon(doc.uri.fsPath)) ?? []) {
       if (a.line - 1 < doc.lineCount) {
         const range = doc.lineAt(Math.max(0, a.line - 1)).range;
         lenses.push(new vscode.CodeLens(range, { title: a.title, tooltip: a.hover, command: "memblame.showLastReport" }));

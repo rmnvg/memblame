@@ -203,3 +203,75 @@ def test_fixture_script_prints_history(tmp_path):
     out = subprocess.run([sys.executable, str(Path(__file__).parent / "fixture_repo.py"),
                           str(tmp_path / "r")], capture_output=True, text=True, check=True)
     assert "include raw payload in rows" in out.stdout
+
+
+def test_removed_allocation_is_blamed_directly_as_improvement(tmp_path):
+    """Mirrors a real markdown-it-py commit: a property setter stopped building a big tuple.
+
+    The allocating line only exists on the *old* side of the diff, and the getter/setter
+    share a qualname, so both the old-side hunk check and scope merging are needed.
+    """
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    git_ = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True,  # noqa: E731
+                                     capture_output=True)
+    git_("init", "-q", "-b", "main")
+    git_("config", "user.email", "t@example.com")
+    git_("config", "user.name", "T")
+    state = """\
+class State:
+    def __init__(self, src):
+        self.src = src
+
+    @property
+    def src(self):
+        return self._src
+
+    @src.setter
+    def src(self, value):
+        self._src = value
+        self.codes = tuple(ord(c) for c in value)
+
+
+def run():
+    s = State("x" * 400_000)
+    return len(s.src)
+"""
+    (repo / "pkg" / "__init__.py").write_text("")
+    (repo / "pkg" / "state.py").write_text(state)
+    git_("add", "-A")
+    git_("commit", "-qm", "v1")
+    (repo / "pkg" / "state.py").write_text(state.replace(
+        "        self.codes = tuple(ord(c) for c in value)\n", ""))
+    git_("commit", "-qam", "drop char codes")
+    fx = type("Fx", (), {"path": repo, "workload": "call:pkg.state:run"})
+    with session(fx) as s:
+        out = api.diff(s, "HEAD~1", "HEAD")
+    f = finding(out, "peak")
+    assert f and f["delta"] < -2_000_000
+    v = f["verdict"]
+    assert v["kind"] == "direct", v
+    assert v["function"] == "pkg/state.py::State.src"
+    assert v["hot_lines"] and v["hot_lines"][0]["line"] == 12  # the removed line, at base
+
+
+def test_peak_inside_one_c_call_falls_back_to_exact_hook(tmp_path):
+    """A temporary list that lives only inside sum(list(...)) is invisible to the polling
+    thread; low coverage must trigger the exact (profile hook) attribution run."""
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / "pkg" / "__init__.py").write_text("")
+    (repo / "pkg" / "spike.py").write_text(
+        "def run():\n    return sum(list(range(2_000_000)))\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-qm", "x"],
+                   cwd=repo, check=True)
+    fx = type("Fx", (), {"path": repo, "workload": "call:pkg.spike:run"})
+    with session(fx, cache=False) as s:
+        out = api.run(s, "HEAD")
+    unit = out["result"]["units"]["workload"]
+    assert unit["peak"]["median"] > 10_000_000
+    assert unit["at_peak"]["coverage"] >= 0.9
+    top = max(unit["at_peak"]["functions"], key=lambda f: f["self"])
+    assert top["id"] == "pkg/spike.py::run"

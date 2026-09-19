@@ -18,6 +18,7 @@ from .runner import SCHEMA
 RUNNER = Path(__file__).with_name("runner.py")
 FAST_NFRAME = 1  # peak bytes do not depend on traceback depth, so timing runs stay cheap
 AGREE_REL, AGREE_ABS = 0.001, 8192  # two fast runs this close -> skip the remaining runs
+MIN_COVERAGE = 0.9  # a peak snapshot must hold >= 90% of the peak, else retry with the hook
 
 
 class MeasureError(RuntimeError):
@@ -68,7 +69,7 @@ def environment_fingerprint(python: str) -> str:
 
 
 def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | None,
-              attribute: bool) -> dict:
+              attribute: bool, peak_mode: str = "poll") -> dict:
     with tempfile.TemporaryDirectory(prefix="mb-run-") as tmp:
         spec_path, out_path = Path(tmp, "spec.json"), Path(tmp, "out.json")
         spec = {
@@ -78,6 +79,7 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
             "nframe": nframe,
             "hints": hints,
             "attribute": attribute,
+            "peak_mode": peak_mode,
             "out": str(out_path),
         }
         spec_path.write_text(json.dumps(spec))
@@ -174,29 +176,32 @@ def measure(python: str, root: Path, s: Settings, attribute: bool = True) -> dic
 
 
 def add_attribution(python: str, root: Path, s: Settings, result: dict) -> dict:
-    """One deep run: full traceback depth plus the peak hook primed with the known peaks.
+    """Deep run(s): full traceback depth plus a snapshot taken near the known peak.
 
-    The hook shifts allocation timing slightly (~2% measured on the fixture), so this run's
-    own numbers are not mixed into the samples.
+    First with a cheap polling thread. Peaks that live for less than a poll interval (e.g.
+    a temporary built and freed inside one C call) are missed, which shows as low coverage;
+    only then re-run those units with the exact but much slower profile hook. The deep runs
+    shift allocation timing slightly, so their numbers are not mixed into the samples.
     """
     hints = {name: u["peak"]["max"] for name, u in result["units"].items()}
-    deep = _run_once(python, root, s, s.nframe, hints, attribute=True)
-    for u in deep["units"]:
-        target = result["units"].get(u["name"])
-        if target is None:
-            continue
-        target["at_peak"], target["retained"] = u["at_peak"], u["retained"]
-        for label, summary in (("peak", u["at_peak"]), ("retained", u["retained"])):
-            if summary and summary["total"] > 1_000_000 and summary["truncated"] > 0.05 * summary[
-                "total"
-            ]:
-                result["warnings"].append(
-                    f"{u['name']}: {summary['truncated'] / summary['total']:.0%} of {label} memory "
-                    f"has no project frame within {s.nframe} frames; try --nframe {s.nframe * 2}"
-                )
-    result["functions"] = deep["functions"]
+    deep = _run_once(python, root, s, s.nframe, hints, attribute=True, peak_mode="poll")
+    _merge_attribution(result, deep, set(hints))
+    # Includes workloads too quick for the poller to see at all (cheap to hook anyway).
+    missed = {name for name, u in result["units"].items()
+              if ((u["at_peak"] or {}).get("coverage") or 0) < MIN_COVERAGE}
+    if missed:
+        exact = _run_once(python, root, s, s.nframe, hints, attribute=True, peak_mode="hook")
+        _merge_attribution(result, exact, missed)
+    result["functions"] = {**deep["functions"], **(exact["functions"] if missed else {})}
     result["attributed"] = True
     return result
+
+
+def _merge_attribution(result: dict, run: dict, names: set[str]) -> None:
+    for u in run["units"]:
+        target = result["units"].get(u["name"])
+        if target is not None and u["name"] in names:
+            target["at_peak"], target["retained"] = u["at_peak"], u["retained"]
 
 
 def _unit_names(runs: list[dict]) -> list[str]:

@@ -13,7 +13,8 @@ def mb(n: int | float, signed: bool = False) -> str:
 
 
 def _loc(v: dict) -> str:
-    return f"{v['file']}:{v['line']} {v['qualname']}()"
+    name = "module level" if v["qualname"] == "<module>" else f"{v['qualname']}()"
+    return f"{v['file']}:{v['line']} {name}"
 
 
 def _verdict_lines(v: dict, indent: str) -> list[str]:
@@ -30,9 +31,12 @@ def _verdict_lines(v: dict, indent: str) -> list[str]:
         for hl in v.get("allocated_at", [])[:3]:
             lines.append(f"{indent}  memory allocated at {hl['file']}:{hl['line']}  "
                          f"{mb(hl['bytes'])}")
+        if v.get("note"):
+            lines.append(f"{indent}  note: {v['note']}")
         return lines
     if kind == "unattributed":
-        return [f"{indent}unattributed: {v.get('reason', 'no attribution data')}"]
+        out = [f"{indent}unattributed: {v.get('reason', 'no attribution data')}"]
+        return out + ([f"{indent}  note: {v['note']}"] if v.get("note") else [])
     return []
 
 

@@ -137,7 +137,10 @@ deleted file mode 100644
 
 def test_parse_hunks():
     hunks = git.parse_hunks(DIFF)
-    assert [(h.file, h.new_range) for h in hunks] == [("pkg/a.py", (7, 8)), ("pkg/a.py", (21, 22))]
+    assert [(h.file, h.new_range) for h in hunks] == [
+        ("pkg/a.py", (7, 8)), ("pkg/a.py", (21, 22)), ("old.py", (0, 1))]
+    assert [(h.old_file, h.old_range) for h in hunks] == [
+        ("pkg/a.py", (7, 7)), ("pkg/a.py", (20, 22)), ("old.py", (1, 2))]
     assert hunks[0].header() == "@@ -7,1 +7,2 @@"
 
 
@@ -163,3 +166,23 @@ def test_parse_threshold(text, good, expected):
 def test_parse_threshold_rejects_garbage():
     with pytest.raises(ValueError):
         api.parse_threshold("lots", 0)
+
+
+def test_property_getter_and_setter_share_one_range(tmp_path):
+    src = textwrap.dedent('''\
+        class State:
+            @property
+            def src(self):
+                return self._src
+
+            @src.setter
+            def src(self, value):
+                self._src = value
+                self.codes = tuple(ord(c) for c in value)
+    ''')
+    (tmp_path / "m.py").write_text(src)
+    a = Attributor(str(tmp_path), set())
+    fid, _ = a.frame(str(tmp_path / "m.py"), 9)  # inside the setter
+    info = a.functions[fid]
+    assert info["qualname"] == "State.src"
+    assert (info["start"], info["end"]) == (2, 9)  # getter decorator .. setter end
