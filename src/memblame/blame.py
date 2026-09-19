@@ -188,10 +188,15 @@ def compare(repo: Path, base: dict, head: dict, base_sha: str, head_sha: str,
         if a_unit is None:
             units.append({"name": name, "status": "new"})
             continue
+        outcome = {"base": a_unit["outcome"], "head": b_unit["outcome"]}
+        if outcome["base"] != outcome["head"]:
+            # A test that now fails early "uses less memory"; comparing would be misleading.
+            units.append({"name": name, "status": "outcome_changed", "outcome": outcome})
+            continue
         units.append({
             "name": name,
             "status": "compared",
-            "outcome": {"base": a_unit["outcome"], "head": b_unit["outcome"]},
+            "outcome": outcome,
             "metrics": [compare_metric(a_unit, b_unit, m, base["functions"], head["functions"],
                                        changes) for m in metrics],
         })

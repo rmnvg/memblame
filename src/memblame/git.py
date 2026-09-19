@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
@@ -23,8 +25,9 @@ class GitError(RuntimeError):
 
 def git(repo: Path, *args: str, check: bool = True) -> str:
     proc = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8",
-        errors="replace",
+        # quotePath=false: non-ASCII paths come out as-is instead of "\303\251"-quoted
+        ["git", "-c", "core.quotePath=false", *args], cwd=repo, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     )
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -93,10 +96,70 @@ def first_parent_range(repo: Path, base: str, head: str) -> list[str]:
 
 
 def is_dirty(repo: Path) -> bool:
-    return bool(git(repo, "status", "--porcelain", "--untracked-files=no").strip())
+    """Uncommitted changes to tracked files, or untracked (not ignored) Python files."""
+    if git(repo, "status", "--porcelain", "--untracked-files=no").strip():
+        return True
+    return bool(git(repo, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.py"))
+
+
+def is_ancestor(repo: Path, older: str, newer: str) -> bool:
+    proc = subprocess.run(["git", "merge-base", "--is-ancestor", older, newer], cwd=repo,
+                          capture_output=True)
+    return proc.returncode == 0
 
 
 # --------------------------------------------------------------------------- worktrees
+
+
+WORKTREE_PREFIX = "mb-"
+
+
+def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def remove_stale_worktrees(repo: Path) -> list[str]:
+    """Remove memblame worktrees whose process is gone (killed, e.g. on Windows cancel)."""
+    removed = []
+    tmp = Path(tempfile.gettempdir()).resolve()
+    for line in git(repo, "worktree", "list", "--porcelain", check=False).splitlines():
+        if not line.startswith("worktree "):
+            continue
+        wt = Path(line[len("worktree "):])
+        base = wt.parent
+        if wt.name != "wt" or not base.name.startswith(WORKTREE_PREFIX):
+            continue
+        if base.resolve().parent != tmp:
+            continue
+        try:
+            pid = int((base / "pid").read_text())
+        except (OSError, ValueError):
+            pid = 0
+        if pid and _pid_alive(pid):
+            continue
+        git(repo, "worktree", "remove", "--force", str(wt), check=False)
+        shutil.rmtree(base, ignore_errors=True)
+        removed.append(str(wt))
+    if removed:
+        git(repo, "worktree", "prune", check=False)
+    return removed
 
 
 class WorktreePool:
@@ -110,8 +173,11 @@ class WorktreePool:
         if sha == WORKTREE:
             return self.repo
         if self._dir is None:
+            remove_stale_worktrees(self.repo)
             # Short path: Windows has path-length limits and worktrees nest deep paths.
-            self._dir = Path(tempfile.mkdtemp(prefix="mb-")) / "wt"
+            base = Path(tempfile.mkdtemp(prefix=WORKTREE_PREFIX))
+            (base / "pid").write_text(str(os.getpid()))
+            self._dir = base / "wt"
             git(self.repo, "worktree", "add", "--detach", "--force", str(self._dir), sha)
         else:
             git(self._dir, "checkout", "--detach", "--force", "--quiet", sha)
@@ -198,7 +264,8 @@ def diff_hunks(repo: Path, base: str, head: str) -> list[Hunk]:
         args.append(head)
     hunks = parse_hunks(git(repo, *args, "--", "*.py"))
     if head == WORKTREE:  # untracked files count as entirely new
-        for rel in git(repo, "ls-files", "--others", "--exclude-standard", "--", "*.py").split():
+        untracked = git(repo, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.py")
+        for rel in filter(None, untracked.split("\0")):
             n = len((repo / rel).read_text(encoding="utf-8", errors="replace").splitlines())
             hunks.append(Hunk(rel, 0, 0, 1, max(n, 1)))
     return hunks

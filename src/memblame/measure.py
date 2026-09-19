@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import statistics
 import subprocess
 import sys
@@ -45,11 +46,10 @@ def find_python(repo: Path, explicit: str | None = None) -> str:
     """The interpreter that has the project's dependencies installed."""
     if explicit:
         return explicit
-    venv = os.environ.get("VIRTUAL_ENV")
-    candidates = [Path(venv)] if venv else []
+    candidates = [Path(os.environ[v]) for v in ("VIRTUAL_ENV", "CONDA_PREFIX") if os.environ.get(v)]
     candidates += [repo / ".venv", repo / "venv"]
     for base in candidates:
-        for rel in ("bin/python", "Scripts/python.exe"):
+        for rel in ("bin/python", "Scripts/python.exe", "python.exe"):
             if (base / rel).exists():
                 return str(base / rel)
     return sys.executable
@@ -95,6 +95,7 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
             tail = (proc.stderr or proc.stdout)[-3000:]
             raise MeasureError(f"runner crashed (exit {proc.returncode}):\n{tail}")
         result = json.loads(out_path.read_text())
+    result["output_tail"] = ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
     if "fatal" in result:
         raise MeasureError(result["fatal"])
     if result.get("schema") != SCHEMA:
@@ -153,7 +154,11 @@ def measure(python: str, root: Path, s: Settings, attribute: bool = True) -> dic
             "retained": None,
         }
         if last["outcome"] != "passed":
-            warnings.append(f"{name}: workload {last['outcome']}")
+            warnings.append(f"{name}: workload {last['outcome']}{_hint(last, python)}")
+    if not units:
+        tail = fast[0].get("output_tail", "").strip().splitlines()[-3:]
+        warnings.append("workload produced no measurements (pytest exit code "
+                        f"{fast[0].get('exit_code')}): {' | '.join(tail)}")
     first = fast[0]
     result = {
         "schema": SCHEMA,
@@ -204,6 +209,16 @@ def _merge_attribution(result: dict, run: dict, names: set[str]) -> None:
             target["at_peak"], target["retained"] = u["at_peak"], u["retained"]
 
 
+def _hint(unit: dict, python: str) -> str:
+    """Turn the most common setup mistake into a readable hint."""
+    error = unit.get("error") or ""
+    if "ModuleNotFoundError" in error or "No module named" in error:
+        missing = error.rsplit("No module named", 1)[-1].strip().splitlines()[0]
+        return (f" (No module named {missing}; the interpreter used was {python}. Pass --python "
+                "with the interpreter that has your project's dependencies)")
+    return ""
+
+
 def _unit_names(runs: list[dict]) -> list[str]:
     names: list[str] = []
     for r in runs:
@@ -220,6 +235,29 @@ def _units(runs: list[dict], name: str) -> list[dict]:
 # --------------------------------------------------------------------------- cache
 
 
+def external_script_hash(repo: Path, workload: str) -> str:
+    """Content hash of a `script:` file that lives outside the repository.
+
+    Files inside the repo are pinned by the commit SHA; a benchmark kept elsewhere is not,
+    so editing it must invalidate cached measurements.
+    """
+    kind, _, target = workload.partition(":")
+    if kind != "script" or not target.strip():
+        return ""
+    path = Path(shlex.split(target)[0])
+    if not path.is_absolute():
+        return ""
+    try:
+        path.resolve().relative_to(repo.resolve())
+        return ""
+    except ValueError:
+        pass
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return "missing"
+
+
 class Cache:
     """Measurements keyed by commit + everything that could change the numbers."""
 
@@ -230,7 +268,8 @@ class Cache:
         if enabled:
             runner_hash = hashlib.sha256(RUNNER.read_bytes()).hexdigest()[:12]
             self._salt = json.dumps(
-                [settings.fingerprint(), environment_fingerprint(python), runner_hash, SCHEMA],
+                [settings.fingerprint(), environment_fingerprint(python), runner_hash, SCHEMA,
+                 external_script_hash(repo, settings.workload)],
                 sort_keys=True,
             )
 

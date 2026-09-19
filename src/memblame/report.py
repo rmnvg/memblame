@@ -57,7 +57,7 @@ def format_run(d: dict) -> str:
             for f in sorted(summary["functions"], key=lambda f: -f["self"])[:3]:
                 if f["self"] > 0:
                     out.append(f"      {mb(f['self']):>10}  {f['id']}")
-    return "\n".join(out + _warnings(r and d))
+    return "\n".join(out + _warnings(d))
 
 
 def format_diff(d: dict) -> str:
@@ -65,9 +65,17 @@ def format_diff(d: dict) -> str:
     out = [f"{a['short']} -> {b['short']}   {b['subject']}"]
     if not d["valid"]:
         return "\n".join(out + _warnings(d))
+    out += [f"  note: {n}" for n in d.get("notes", [])]
+    if not d["units"]:
+        out.append("  no units were measured (see warnings)")
     for u in d["units"]:
+        if u["status"] == "outcome_changed":
+            o = u["outcome"]
+            out.append(f"  {u['name']}: outcome changed {o['base']} -> {o['head']}; "
+                       "memory not compared")
+            continue
         if u["status"] != "compared":
-            out.append(f"  {u['name']}: {u['status']}")
+            out.append(f"  {u['name']}: {u['status']} (only measured on one side)")
             continue
         out.append(f"  {u['name']}")
         for m in u["metrics"]:
@@ -149,14 +157,15 @@ def _findings(findings: list[dict], points: list[dict]) -> list[str]:
 
 def format_bisect(d: dict) -> str:
     if d["status"] != "found":
-        return f"bisect: {d['message']}"
+        return "\n".join([f"bisect: {d['message']}"] + _warnings(d))
     c = d["culprit"]
     out = [f"First bad commit: {c['short']}  {c['author']}  \"{c['subject']}\"",
            f"  {d['unit']} {d['metric']} threshold {mb(d['threshold'])}; "
            f"{d['steps']} bisect steps for {d['candidates']} candidate commits"]
     for t in d["measurements"]:
-        mark = "bad " if t["bad"] else "good"
-        out.append(f"    {mark} {t['commit']['short']}  {mb(t['value']):>9}  "
+        mark = "skip" if t.get("skipped") else "bad " if t["bad"] else "good"
+        value = "-" if t["value"] is None else mb(t["value"])
+        out.append(f"    {mark} {t['commit']['short']}  {value:>9}  "
                    f"{t['commit']['subject'][:50]}")
     for f in d["findings"]:
         out.append(f"  {f['metric']} {mb(f['delta'], True)} vs parent in {f['unit']}")

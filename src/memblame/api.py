@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import blame, git
-from .measure import Cache, Settings, add_attribution, find_python, measure
+from .measure import Cache, MeasureError, Settings, add_attribution, find_python, measure
 from .runner import SCHEMA
 
 Progress = Callable[[str], None]
@@ -65,20 +65,37 @@ class Session:
         root = self._pool.checkout(sha)
         if res is None:
             self.progress(f"{label}measuring {commit.short} {commit.subject[:50]!r}")
-            res = measure(self.python, root, self.settings, attribute=attribute)
+            try:
+                res = measure(self.python, root, self.settings, attribute=attribute)
+            except MeasureError as exc:
+                # A commit that cannot be measured (crash, timeout) is skipped, not fatal:
+                # like `git bisect skip`. Not cached, so a retry measures it again.
+                res = failed_result(str(exc))
             self.measured += 1
         else:
             self.progress(f"{label}attributing {commit.short} {commit.subject[:50]!r}")
-            add_attribution(self.python, root, self.settings, res)
+            try:
+                add_attribution(self.python, root, self.settings, res)
+            except MeasureError as exc:
+                res["warnings"].append(f"attribution run failed: {str(exc)[-300:]}")
+                res["attributed"] = True  # keep the numbers; don't retry within this session
+                self._memo[sha] = res
+                return commit, res
         self._memo[sha] = res
-        if res["valid"]:
+        if res["valid"] and not res.get("error"):
             self.cache.put(sha, res)
         return commit, res
 
 
+def failed_result(error: str) -> dict:
+    return {"schema": SCHEMA, "valid": False, "error": error, "env_problems": [], "units": {},
+            "functions": {}, "attributed": True, "warnings": [], "runs": 0}
+
+
 def run(session: Session, rev: str = git.WORKTREE) -> dict:
     commit, res = session.result(rev, attribute=True)
-    return {**session.header("run"), "commit": commit.to_json(), "result": res}
+    return {**session.header("run"), "commit": commit.to_json(), "result": res,
+            "warnings": _warnings(commit, res)}
 
 
 def _compare(session: Session, a: tuple[git.Commit, dict], b: tuple[git.Commit, dict],
@@ -93,9 +110,17 @@ def _compare(session: Session, a: tuple[git.Commit, dict], b: tuple[git.Commit, 
 
 
 def diff(session: Session, base: str, head: str = git.WORKTREE) -> dict:
+    notes = []
+    if head == git.WORKTREE and not git.is_dirty(session.repo):
+        # Nothing uncommitted: measuring the same code twice would only double the wait.
+        head = "HEAD"
+        notes.append("working tree has no uncommitted Python changes; compared HEAD with itself"
+                     if git.resolve(session.repo, base) == git.resolve(session.repo, "HEAD")
+                     else "working tree is clean; measured HEAD instead")
     a = session.result(base, "[1/2] ")
     b = session.result(head, "[2/2] ")
-    out = {**session.header("diff"), "base": a[0].to_json(), "head": b[0].to_json()}
+    out = {**session.header("diff"), "base": a[0].to_json(), "head": b[0].to_json(),
+           "notes": notes}
     out["valid"] = a[1]["valid"] and b[1]["valid"]
     if out["valid"]:
         cmp, a, b = _compare(session, a, b)
@@ -128,6 +153,7 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
     later exactly undone inside one unsplit segment is missed; use exhaustive=True to
     measure every commit.
     """
+    _require_ancestor(session.repo, base, head)
     shas = git.first_parent_range(session.repo, base, head)
     n = len(shas)
     measured: dict[int, tuple[git.Commit, dict]] = {}
@@ -218,13 +244,19 @@ def _pick_target(good: dict, bad: dict, unit: str | None, metric: str | None):
 
 def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
            unit: str | None = None, metric: str | None = None) -> dict:
+    _require_ancestor(session.repo, good, bad)
     shas = git.first_parent_range(session.repo, good, bad)
     if len(shas) < 2:
-        raise ValueError("good must be an ancestor of bad (on the first-parent chain)")
+        raise ValueError("good and bad are the same commit")
     out = session.header("bisect")
     g_commit, g = session.result(shas[0], "good ")
     b_commit, b = session.result(shas[-1], "bad ")
     out.update(good=g_commit.to_json(), bad=b_commit.to_json(), candidates=len(shas) - 2)
+    broken = [c.short for c, r in ((g_commit, g), (b_commit, b)) if not r["valid"]]
+    if broken:
+        return {**out, "status": "error",
+                "warnings": _warnings(g_commit, g) + _warnings(b_commit, b),
+                "message": f"cannot measure {', '.join(broken)}; see warnings"}
     target = _pick_target(g, b, unit, metric)
     if target is None:
         return {**out, "status": "no_regression",
@@ -232,9 +264,15 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
     _, unit_name, metric_name = target
     key = blame.METRICS[metric_name][0]
 
+    endpoint_outcomes = {g["units"][unit_name]["outcome"], b["units"][unit_name]["outcome"]}
+
     def value(res: dict) -> int | None:
+        """None = skip this commit: not measurable, or the workload behaved differently
+        (e.g. crashed early and so used little memory) from both known endpoints."""
         u = res["units"].get(unit_name)
-        return u[key]["median"] if u and res["valid"] else None
+        if not (u and res["valid"]) or u["outcome"] not in endpoint_outcomes:
+            return None
+        return u[key]["median"]
 
     good_v, bad_v = value(g), value(b)
     if threshold:
@@ -247,33 +285,53 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
                 "message": f"bad ({bad_v} B) does not exceed the threshold ({limit} B)"}
 
     measured = {0: (g_commit, g), len(shas) - 1: (b_commit, b)}
+    skipped: set[int] = set()
     lo, hi = 0, len(shas) - 1
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
+    while True:
+        # Nearest-to-the-middle commit strictly between lo and hi that is not skipped.
+        order = sorted(range(lo + 1, hi), key=lambda i: abs(i - (lo + hi) / 2))
+        mid = next((i for i in order if i not in skipped), None)
+        if mid is None:
+            break
         measured[mid] = session.result(shas[mid], f"step {len(measured) - 1} ")
         v = value(measured[mid][1])
         if v is None:
-            raise RuntimeError(f"cannot measure {shas[mid][:9]}: invalid environment")
-        if v > limit:
+            skipped.add(mid)
+        elif v > limit:
             hi = mid
         else:
             lo = mid
     parent, culprit = measured[lo], measured[hi]
     trail = [{"commit": measured[i][0].to_json(), "value": value(measured[i][1]),
-              "bad": value(measured[i][1]) > limit} for i in sorted(measured)]
-    flags = [t["bad"] for t in trail]
+              "bad": (value(measured[i][1]) or 0) > limit, "skipped": i in skipped}
+             for i in sorted(measured)]
+    between = [shas[i] for i in range(lo + 1, hi)]
+    flags = [t["bad"] for t in trail if not t["skipped"]]
     monotonic = flags == sorted(flags)  # all good commits come before all bad ones
     cmp, parent, culprit = _compare(session, parent, culprit)
     out.update(
         status="found", culprit=culprit[0].to_json(), parent=parent[0].to_json(),
         measurements=trail, steps=len(measured) - 2, monotonic=monotonic, **cmp,
     )
+    out["warnings"] = []
+    if between:
+        out["culprit_range"] = between + [culprit[0].sha]
+        out["warnings"].append(
+            f"{len(between)} commit(s) right before the culprit could not be measured (skipped); "
+            f"the regression is in one of {len(between) + 1} commits ending at "
+            f"{culprit[0].short}")
     if not monotonic:
-        out.setdefault("warnings", []).append(
+        out["warnings"].append(
             "memory is not monotonic in this range; the culprit is *a* transition past the "
             "threshold, not necessarily the first. Run `memblame range` to see all commits."
         )
     return out
+
+
+def _require_ancestor(repo: Path, older: str, newer: str) -> None:
+    if not git.is_ancestor(repo, git.resolve(repo, older), git.resolve(repo, newer)):
+        raise ValueError(f"{older} is not an ancestor of {newer}; memblame follows the "
+                         "first-parent history from the older to the newer commit")
 
 
 def _brief(res: dict) -> dict:
@@ -306,7 +364,9 @@ def _dedupe(warnings: list[str]) -> list[str]:
 
 def _warnings(commit: git.Commit, res: dict) -> list[str]:
     out = [f"{commit.short}: {w}" for w in res.get("warnings", [])]
-    if not res["valid"]:
+    if res.get("error"):
+        out.append(f"{commit.short}: SKIPPED - could not be measured: {res['error'][-300:]}")
+    elif not res["valid"]:
         out.append(
             f"{commit.short}: INVALID ENVIRONMENT - project modules were imported from outside "
             f"the checkout ({'; '.join(res['env_problems'][:3])}). Set --pythonpath (e.g. src) "

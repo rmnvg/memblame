@@ -24,7 +24,11 @@ def load_config(repo: Path) -> dict:
         path = repo / name
         if not path.exists():
             continue
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (tomllib.TOMLDecodeError, OSError) as exc:
+            print(f"memblame: ignoring {name}: {exc}", file=sys.stderr)
+            continue
         for key in table or ():
             data = data.get(key, {})
         if data:
@@ -81,10 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
 def settings_from(args: argparse.Namespace, config: dict) -> Settings:
     workload = args.workload or config.get("workload")
     if not workload:
-        raise SystemExit(
-            "memblame: no workload. Pass -w, e.g. -w 'pytest:tests/test_big.py' or "
+        raise ValueError(
+            "no workload. Pass -w, e.g. -w 'pytest:tests/test_big.py' or "
             "-w 'call:pkg.module:main', or set workload in [tool.memblame] in pyproject.toml"
         )
+    if workload.partition(":")[0] not in ("pytest", "script", "call"):
+        raise ValueError(f"bad workload {workload!r}: must start with pytest:, script: or call:")
     pythonpath = args.pythonpath or config.get("pythonpath")
     if isinstance(pythonpath, str):
         pythonpath = [pythonpath]
@@ -115,8 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"memblame: {args.repo} is not inside a git repository", file=sys.stderr)
         return 2
     config = load_config(repo)
-    settings = settings_from(args, config)
     try:
+        settings = settings_from(args, config)
         with api.Session(repo, settings, use_cache=not args.no_cache) as s:
             if args.command == "run":
                 out, fmt = api.run(s, args.rev), report.format_run
@@ -137,6 +143,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"schema": 1, "kind": "error", "error": str(exc)}))
         print(f"memblame: error: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:  # worktrees were already removed by the session's __exit__
+        print("memblame: interrupted", file=sys.stderr)
+        return 130
     print(json.dumps(out, indent=1) if args.json else fmt(out))
     return 3 if _has_regression(out) else 0
 

@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import ast
 import gc
+import inspect
 import json
 import os
 import shlex
 import sys
 import threading
 import time
+import tokenize
 import traceback
 import tracemalloc
 from collections import defaultdict
@@ -122,9 +124,9 @@ class Attributor:
         if rel is not None:
             if rel not in self._scope_cache:
                 try:
-                    with open(filename, encoding="utf-8") as fh:
+                    with tokenize.open(filename) as fh:  # honours "# -*- coding: ... -*-"
                         self._scope_cache[rel] = scopes_from_source(fh.read())
-                except OSError:
+                except (OSError, SyntaxError, UnicodeDecodeError):
                     self._scope_cache[rel] = []
             scope = innermost_scope(self._scope_cache[rel], lineno)
             qualname = scope[3] if scope else "<module>"
@@ -351,11 +353,19 @@ def _run_call(target: str, meter: Meter) -> None:
     meter.start("workload")
     try:
         func = getattr(importlib.import_module(module_name), func_name)
-        func()
+        result = func()
+        if inspect.isawaitable(result):
+            import asyncio
+
+            asyncio.run(_await(result))
     except BaseException as exc:  # noqa: BLE001 - report every failure, keep measuring
         meter.stop("error", _format_exc(exc))
         return
     meter.stop("passed")
+
+
+async def _await(awaitable):
+    return await awaitable
 
 
 def _run_script(target: str, meter: Meter) -> None:
@@ -363,6 +373,7 @@ def _run_script(target: str, meter: Meter) -> None:
 
     argv = shlex.split(target)
     sys.argv = argv
+    sys.path.insert(0, os.path.dirname(os.path.abspath(argv[0])))
     meter.start("workload")
     try:
         runpy.run_path(argv[0], run_name="__main__")
@@ -398,8 +409,31 @@ def _run_pytest(target: str, meter: Meter) -> int:
             elif report.skipped and self.outcome == "passed":
                 self.outcome = "skipped"
 
-    args = shlex.split(target) + ["-q", "-p", "no:cacheprovider", "--no-header"]
+    args = shlex.split(target) + pytest_extra_args()
     return int(pytest.main(args, plugins=[Plugin()]))
+
+
+def pytest_extra_args() -> list[str]:
+    """Flags that keep measurements valid whatever the project's pytest config says.
+
+    Tests must run in this process (xdist workers would be invisible to us), in a fixed
+    order (pytest-randomly would move lazy-import costs between tests), and without
+    coverage tracing (which allocates on every line and slows everything down).
+    """
+    args = ["-q", "-p", "no:cacheprovider", "--no-header", "-p", "no:randomly"]
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
+        return args
+    try:
+        from importlib.metadata import entry_points
+
+        plugins = {ep.name for ep in entry_points(group="pytest11")}
+    except Exception:  # noqa: BLE001 - metadata problems must not stop the measurement
+        plugins = set()
+    if "xdist.plugin" in plugins or "xdist" in plugins:
+        args += ["-n", "0"]
+    if "pytest_cov" in plugins:
+        args += ["--no-cov"]
+    return args
 
 
 def _format_exc(exc: BaseException) -> str:
