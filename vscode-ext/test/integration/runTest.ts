@@ -15,6 +15,11 @@ async function main() {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "mb-it-"));
   const repo = path.join(work, "repo");
   cp.execFileSync(python, [path.join(projectRoot, "tests", "fixture_repo.py"), repo, "planted"], { stdio: "inherit" });
+  // Exercise the CodeLens workload path through the editor and the Python parser.
+  fs.mkdirSync(path.join(repo, "test folder"));
+  fs.copyFileSync(path.join(repo, "tests", "test_app.py"), path.join(repo, "test folder", "test_app.py"));
+  cp.execFileSync("git", ["add", "test folder/test_app.py"], { cwd: repo });
+  cp.execFileSync("git", ["commit", "-qm", "add test path containing spaces"], { cwd: repo });
   fs.mkdirSync(path.join(repo, ".vscode"));
   fs.writeFileSync(
     path.join(repo, ".vscode", "settings.json"),

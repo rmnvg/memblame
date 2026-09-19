@@ -6,6 +6,18 @@ export interface WorkloadSuggestion {
   detail: string;
 }
 
+/** One argument for the engine's workload parser, including spaces and literal quotes. */
+export function quoteWorkloadArg(value: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(value)) {
+    return value;
+  }
+  return "'" + value.replace(/'/g, "'\"'\"'") + "'";
+}
+
+export function pytestWorkload(file: string, test?: string): string {
+  return `pytest:${quoteWorkloadArg(test ? `${file}::${test}` : file)}`;
+}
+
 export function isTestFile(relPath: string): boolean {
   const base = relPath.split("/").pop() ?? "";
   return /^test_.*\.py$/.test(base) || /_test\.py$/.test(base);
@@ -64,11 +76,11 @@ export function suggestWorkloads(relPath: string, text: string, cursorLine: numb
     if (current) {
       out.push({
         label: `$(beaker) ${current.name}`,
-        workload: `pytest:${relPath}::${current.name}`,
+        workload: pytestWorkload(relPath, current.name),
         detail: "the test at the cursor",
       });
     }
-    out.push({ label: `$(beaker) ${relPath}`, workload: `pytest:${relPath}`, detail: "every test in this file, measured separately" });
+    out.push({ label: `$(beaker) ${relPath}`, workload: pytestWorkload(relPath), detail: "every test in this file, measured separately" });
     return out;
   }
   if (/^\s*def main\s*\(/m.test(text)) {
@@ -78,7 +90,7 @@ export function suggestWorkloads(relPath: string, text: string, cursorLine: numb
       detail: "call main() from this module",
     });
   }
-  out.push({ label: `$(file-code) ${relPath}`, workload: `script:${relPath}`, detail: "run this file as a script" });
+  out.push({ label: `$(file-code) ${relPath}`, workload: `script:${quoteWorkloadArg(relPath)}`, detail: "run this file as a script" });
   return out;
 }
 

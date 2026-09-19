@@ -58,6 +58,10 @@ Pick what to run with `-w` (or `workload` in `[tool.memblame]` in `pyproject.tom
 | `script:bench/run.py --n 10` | a script; the path may be absolute (outside the repo), which keeps the workload identical at every commit |
 | `call:mypkg.pipeline:main` | a function |
 
+Absolute script paths inside the repo follow the selected revision, just like relative
+paths. External scripts stay fixed. Quote paths or pytest node IDs containing spaces
+inside the workload, e.g. `-w "script:'bench scripts/run.py'"`.
+
 ### Options
 
 | option | default | meaning |
@@ -76,8 +80,11 @@ Pick what to run with `-w` (or `workload` in `[tool.memblame]` in `pyproject.tom
 | `bisect --threshold` | noise band | `200MB` (absolute), `+20MB` or `+10%` (relative to good) |
 | `bisect --unit NAME` / `--metric peak\|retained` | the one that grew most | what to track, e.g. a pytest node id |
 
-Exit codes: `0` no significant increase, `3` a significant memory increase was found (handy
-in CI), `1` error, `2` not a git repository.
+Exit codes: `0` a completed check with no significant increase, `3` a significant memory
+increase was found (handy in CI), `1` error or incomplete measurement, `2` not a git repository.
+Failed workloads, invalid environments, and inconsistent repeated runs return `1` for
+`run`, `diff`, and `range`, even if a partial report has findings. Bisect can still return
+`3` after skipping broken intermediate commits; unmeasurable or failing endpoints return `1`.
 
 ### Configuration
 

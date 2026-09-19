@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from . import blame, git
@@ -17,6 +18,7 @@ from .measure import (
     check_interpreter,
     find_python,
     measure,
+    normalize_workload,
 )
 from .runner import SCHEMA
 
@@ -33,10 +35,10 @@ class Session:
     def __init__(self, repo: Path, settings: Settings, use_cache: bool = True,
                  progress: Progress = _stderr):
         self.repo = git.repo_root(repo)
-        self.settings = settings
+        self.settings = replace(settings, workload=normalize_workload(self.repo, settings.workload))
         self.python = find_python(self.repo, settings.python)
         check_interpreter(self.python)
-        self.cache = Cache(self.repo, self.python, settings, enabled=use_cache)
+        self.cache = Cache(self.repo, self.python, self.settings, enabled=use_cache)
         self.progress = progress
         self.measured = 0  # fresh (uncached) measurements, for tests and bisect stats
         self._pool = git.WorktreePool(self.repo)
@@ -264,7 +266,10 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
     g_commit, g = session.result(shas[0], "good ")
     b_commit, b = session.result(shas[-1], "bad ")
     out.update(good=g_commit.to_json(), bad=b_commit.to_json(), candidates=len(shas) - 2)
-    broken = [c.short for c, r in ((g_commit, g), (b_commit, b)) if not r["valid"]]
+    broken = [c.short for c, r in ((g_commit, g), (b_commit, b))
+              if not r["valid"] or not r["units"]
+              or any(u["outcome"] in ("failed", "error")
+                     for name, u in r["units"].items() if unit is None or name == unit)]
     if broken:
         return {**out, "status": "error",
                 "warnings": _warnings(g_commit, g) + _warnings(b_commit, b),

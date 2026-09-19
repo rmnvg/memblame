@@ -144,13 +144,36 @@ def split_args(text: str) -> list[str]:
     """Split workload arguments like the platform's shell.
 
     POSIX rules treat backslashes as escapes, which would turn a Windows path such as
-    C:\\bench\\run.py into C:benchrun.py; on Windows split without escapes and drop the
-    quotes around quoted tokens ("C:\\my dir\\run.py").
+    C:\\bench\\run.py into C:benchrun.py; on Windows preserve backslashes while still
+    joining adjacent quoted fragments (including quoted pytest parameter IDs).
     """
     if os.name != "nt":
         return shlex.split(text)
-    tokens = shlex.split(text, posix=False)
-    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.escape = ""
+    return list(lexer)
+
+
+def normalize_workload(repo: Path, workload: str) -> str:
+    """Pin absolute repo-local scripts to each checkout; external scripts stay fixed."""
+    kind, _, target = workload.partition(":")
+    if kind != "script":
+        return workload
+    argv = split_args(target)
+    if not argv or not Path(argv[0]).is_absolute():
+        return workload
+    try:
+        rel = Path(argv[0]).resolve().relative_to(repo.resolve())
+    except ValueError:
+        return workload
+    argv[0] = rel.as_posix()
+    return "script:" + " ".join(shlex.quote(arg) for arg in argv)
+
+
+def _outcomes(run: dict) -> dict[str, str]:
+    return {u["name"]: u["outcome"] for u in run["units"]}
 
 
 def _stats(samples: list[int]) -> dict:
@@ -165,6 +188,9 @@ def _stats(samples: list[int]) -> dict:
 def _agree(runs: list[dict]) -> bool:
     """Two runs agree when every unit's numbers match within 0.1% (or 8 KB)."""
     a, b = runs[-2], runs[-1]
+    if (_outcomes(a) != _outcomes(b) or a.get("exit_code") != b.get("exit_code")
+            or a["env_problems"] or b["env_problems"]):
+        return False
     ua = {u["name"]: u for u in a["units"]}
     for u in b["units"]:
         v = ua.get(u["name"])
@@ -187,6 +213,10 @@ def measure(python: str, root: Path, s: Settings, attribute: bool = True) -> dic
     fast: list[dict] = []
     while len(fast) < max(s.runs, 1):
         fast.append(_run_once(python, root, s, FAST_NFRAME, None, attribute=False))
+        if (_outcomes(fast[-1]) != _outcomes(fast[0])
+                or fast[-1].get("exit_code") != fast[0].get("exit_code")):
+            raise MeasureError("inconsistent workload across runs: unit names, outcomes or exit "
+                               "codes changed; measurements were not combined")
         if len(fast) >= 2 and _agree(fast):
             break
     units = {}
@@ -207,9 +237,13 @@ def measure(python: str, root: Path, s: Settings, attribute: bool = True) -> dic
             warnings.append(f"{name}: workload {last['outcome']}{_hint(last, python)}")
     if not units:
         tail = fast[0].get("output_tail", "").strip().splitlines()[-3:]
-        warnings.append("workload produced no measurements (pytest exit code "
-                        f"{fast[0].get('exit_code')}): {' | '.join(tail)}")
+        raise MeasureError("workload produced no measurements (pytest exit code "
+                           f"{fast[0].get('exit_code')}): {' | '.join(tail)}")
+    # Collection errors and interrupted pytest runs may leave some units behind.
+    if any(r.get("exit_code", 0) not in (0, 1) for r in fast):
+        raise MeasureError(f"workload did not complete (pytest exit code {fast[0]['exit_code']})")
     first = fast[0]
+    env_problems = sorted({p for r in fast for p in r["env_problems"]})
     result = {
         "schema": SCHEMA,
         "tool_version": __version__,
@@ -218,8 +252,8 @@ def measure(python: str, root: Path, s: Settings, attribute: bool = True) -> dic
         "platform": first["platform"],
         "runs": len(fast),
         "nframe": s.nframe,
-        "env_problems": first["env_problems"],
-        "valid": not first["env_problems"],
+        "env_problems": env_problems,
+        "valid": not env_problems,
         "units": units,
         "functions": {},
         "attributed": False,
@@ -240,19 +274,32 @@ def add_attribution(python: str, root: Path, s: Settings, result: dict) -> dict:
     """
     hints = {name: u["peak"]["max"] for name, u in result["units"].items()}
     deep = _run_once(python, root, s, s.nframe, hints, attribute=True, peak_mode="poll")
-    _merge_attribution(result, deep, set(hints))
+    _validate_attribution(result, deep)
     # Includes workloads too quick for the poller to see at all (cheap to hook anyway).
-    missed = {name for name, u in result["units"].items()
+    missed = {u["name"] for u in deep["units"]
               if ((u["at_peak"] or {}).get("coverage") or 0) < MIN_COVERAGE}
     if missed:
         # Exact hook, snapshotting from half the peak: when the true peak is a temporary
         # inside one C call (never observable), we still get the largest observable state.
         exact = _run_once(python, root, s, s.nframe, hints, attribute=True, peak_mode="hook",
                           hint_fraction=HOOK_HINT_FRACTION)
+        _validate_attribution(result, exact)
+    _merge_attribution(result, deep, set(hints))
+    if missed:
         _merge_attribution(result, exact, missed, keep_better=True)
     result["functions"] = {**deep["functions"], **(exact["functions"] if missed else {})}
     result["attributed"] = True
     return result
+
+
+def _validate_attribution(result: dict, run: dict) -> None:
+    expected = {name: u["outcome"] for name, u in result["units"].items()}
+    if run["env_problems"]:
+        raise MeasureError("attribution imported project modules outside the checkout: "
+                           + "; ".join(run["env_problems"]))
+    if _outcomes(run) != expected or run.get("exit_code", 0) not in (0, 1):
+        raise MeasureError("attribution workload differs from measured runs; unit names, "
+                           "outcomes or exit codes changed")
 
 
 def _merge_attribution(result: dict, run: dict, names: set[str], keep_better: bool = False,
