@@ -1,201 +1,263 @@
-# memblame — "git blame for memory" (Python)
+# memblame: "git blame for memory" (Python)
 
 Working name: `memblame`. Change it any time.
 
+## 0. Status (2026-09-19)
+
+| Phase | State | Evidence |
+|---|---|---|
+| 0 Spike | done, folded into the CLI | |
+| 1 `run` / `diff`, median, cleanup, env check | done | `tests/test_integration.py` |
+| 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
+| 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
+| 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
+| 5 VS Code extension | done; VSIX builds (399 KB) | 10 node tests + 6-step integration test in real VS Code 1.131 |
+| 6 Extras | not started | section 12 |
+
+Test suites: `pytest` (31 tests, ~75 s), `ruff check src tests`,
+`cd vscode-ext && npm test` (10), `npm run test:integration` (launches VS Code; set
+`VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
+
 ## 1. One-paragraph summary
 
-A tool that runs a developer's own Python workload (a pytest test, a script, or a function) at many git commits, measures memory at each commit, and reports **which commit made memory grow and which function is responsible**, mapped back to the lines that changed in the git diff. Core is a standalone CLI. A VS Code extension is a thin UI on top, added later.
+A tool that runs a developer's own Python workload (a pytest test, a script or a function)
+at git commits, measures memory at each one, and reports **which commit made memory grow and
+which function is responsible**, mapped back to the changed lines in the git diff. The core
+is a standalone, stdlib-only CLI. The VS Code extension is a thin UI that bundles that CLI
+and talks to it through JSON.
 
 ## 2. Problem statement
 
 ### 2.1 The pain
-A Python service, data pipeline, ML job or library suddenly uses more RAM. Nobody notices at the time of the commit. Weeks later it shows up as an OOM kill, a bigger cloud bill, or a slow container. The question then is: **"Which commit did this, and what in that commit?"**
-
-Today the developer answers it by hand:
-1. Guess a range of commits.
-2. `git checkout` an old commit, run the workload under some profiler, write down the number.
-3. Repeat for a dozen commits, binary-search by hand.
-4. Open the two profiles side by side and guess which function grew.
-5. Cross-check with `git diff` to find the responsible change.
-
-This takes hours, is error-prone (noise, wrong environment, forgetting to reset state), and is usually skipped, so memory regressions ship.
+A Python service, data pipeline, ML job or library suddenly uses more RAM. Nobody notices at
+the time of the commit. Weeks later it shows up as an OOM kill, a bigger cloud bill, or a
+slow container. The question is then **"Which commit did this, and what in that commit?"**
+Answering it by hand (checkout, profile, write down, bisect, compare profiles, cross-check
+the diff) takes hours and is usually skipped.
 
 ### 2.2 Who has this problem
-- Developers of long-running services and workers (memory creeps up between releases).
-- Data / ML engineers (a pandas/numpy change doubles a DataFrame's footprint).
-- Library maintainers with memory constraints.
-- Anyone who has seen "it worked last month" on a memory-limited container.
+Service and worker developers, data/ML engineers, library maintainers, and anyone who has
+seen "it worked last month" on a memory-limited container.
 
-### 2.3 Why existing tools do not solve it (checked around Sept 2026; re-verify before publishing)
-- **Single-run profilers.** Scalene, memray, memory_profiler and the VS Code extensions built on them (for example a Scalene extension and a py-spy/memray "Flamegraph" extension) show memory for **one run of one version**. They do not compare across commits.
-- **Cross-commit tracking exists but not for your own repo in your editor.** CPython Memory Insights tracks memory across CPython's own commits using community workers. `asv` (airspeed velocity) tracks benchmarks across commits but its peak-memory metric is RSS-based, which per pytest-benchmem's docs misses allocator-level detail that memray sees. pytest-benchmem explicitly does not do cross-commit history and points to asv/CodSpeed.
-- **Gap we are targeting:** local, developer-side, per-commit Python memory comparison with **function-level attribution mapped to the git diff**, plus an editor UI. I did not find a tool doing exactly this. That is not proof of "first", so do NOT claim "first ever". Claim: *"per-commit Python memory regression tracking with function-level blame, inside your editor."*
-
-### 2.4 Success looks like
-Given a repo, a workload and a commit range, the tool prints something like:
-
-```
-Peak memory by commit (median of 3 runs)
-  a1b2c3  412 MB  +38 MB  <-- regression   Rahul  "add caching layer"
-  9f8e7d  374 MB   +1 MB
-Top change a1b2c3 vs 9f8e7d:
-  +38 MB  pkg/parse.py:41  load_rows()   (inside changed hunk @@ -38,6 +38,9 @@)
-```
+### 2.3 Existing tools (checked around Sept 2026; re-verify before publishing)
+- Single-run profilers (Scalene, memray, memory_profiler and the VS Code extensions built on
+  them) show one run of one version.
+- Cross-commit tracking: CPython Memory Insights (CPython only), `asv` (RSS-based peak
+  metric), pytest-benchmem (no cross-commit history).
+- Gap: local, per-commit Python memory comparison with **function-level attribution mapped to
+  the git diff**, in the editor. Do NOT claim "first ever". Claim: *"per-commit Python memory
+  regression tracking with function-level blame, inside your editor."*
 
 ## 3. Goals and non-goals
 
-**Goals (MVP)**
-- Measure peak memory of a workload at any commit, reproducibly.
-- Compare two commits with function-level attribution and map it to changed hunks.
-- Run over a commit range with caching; find the first commit that crosses a threshold (bisect).
-- Be honest about noise (multiple runs, variance shown).
-- Works on Windows, macOS and Linux (core uses only stdlib `tracemalloc`).
+Goals: reproducible peak and retained memory per commit; function-level diff blame; range
+with cache; bisect; honest noise handling; Windows, macOS and Linux (stdlib only).
 
-**Non-goals (for now)**
-- Writing our own profiler. We wrap `tracemalloc` (and later optionally memray).
-- Other languages.
-- A cloud service or dashboard.
-- Changing dependencies per commit (MVP assumes one fixed environment; only the project code changes).
-- CPU profiling.
+Non-goals for now: our own profiler, other languages, a cloud service, per-commit dependency
+installs, CPU profiling.
 
-## 4. How measurement works (design decisions)
+## 4. How measurement works (as built)
 
-**Workload.** Three supported forms, all run inside a fresh subprocess so state never leaks between commits:
-- `pytest:<node id>`, for example `pytest:tests/test_big.py::test_load`
-- `script:<path> [args]`
-- `call:<module>:<function>`
+**Workloads** (fresh subprocess of the *project's* interpreter per run):
+`pytest:<node ids>` (each test is its own *unit*, and only the test's own setup, call and
+teardown is traced), `script:<path> [args]` (path may be absolute and outside the repo,
+which keeps it identical across commits), `call:<module>:<function>`.
 
-**Checkout.** For each commit: `git worktree add --detach <tmp> <sha>`, run, then `git worktree remove --force`. Always clean up, including on failure. Never touch the user's working tree.
+**Checkout.** One reusable detached worktree per command (`git worktree add` once, then
+`checkout --force` + `clean -fdx`), removed in `finally`. SIGTERM becomes `SystemExit`, so
+cancelling from the editor still cleans up. Uncommitted work = pseudo-revision `WORKTREE`
+(the repo itself; never cached).
 
-**Runner (`runner.py`).** In the subprocess: set `cwd` and `sys.path` to the worktree, call `tracemalloc.start(nframe=25)`, run the workload, and emit JSON.
+**Runner** (`runner.py`, standalone, stdlib-only, run by path; it must not import memblame).
+It sets `sys.path`: removes its own dir, prepends the pythonpath dirs (auto: `src` + `.` if
+`src/` exists). Results go to a JSON file, not stdout, because workloads print.
 
-**Metrics recorded per run**
-- `peak_bytes`: from `tracemalloc.get_traced_memory()` (exact for traced allocations).
-- `top_at_peak`: allocation sites near the peak. tracemalloc does not tell you *when* the peak happened, so use a background polling thread that watches the current traced size and takes a throttled snapshot whenever a new high-water mark is reached; keep the snapshot from the highest point. This is an approximation; document it and measure its overhead.
-- `retained_at_end`: snapshot statistics after the workload (cheap, deterministic, secondary).
+**Two kinds of runs** (the key design change, driven by the measurements in section 8):
+1. *Fast runs*: `tracemalloc` with 1 frame, no snapshots. They give `peak_bytes` and
+   `end_bytes` (after `gc.collect()`: "retained"). Up to `runs` (default 3), stopping early
+   once two runs agree within 0.1 % / 8 KB. Only these runs feed the median and the spread.
+2. *Attribution run*: done **lazily**, only for commits around a significant change (and for
+   `memblame run`). Full depth (`nframe`, default 16). A snapshot is taken near the peak known
+   from the fast runs (≥ 90 %, then on each new +2 % high):
+   - first by a **polling thread** (0.5 ms, switch interval lowered), which is cheap;
+   - if the snapshot covers < 90 % of the peak (e.g. a temporary that lives inside one C
+     call), the run is repeated with a **profile hook** on every return / C return, which is
+     exact but 10×+ slower on call-heavy code.
+   The attribution run's own numbers are *not* samples (it shifts allocation timing ~2 %).
 
-**Attribution.** Take each allocation's traceback and pick the **most recent frame that lies inside the project** (filter by path prefix = worktree). Map `file:line` to the enclosing function using `ast` (function start line to `end_lineno`). Aggregate bytes per function.
+**Attribution.** Traces are grouped by traceback (fast path over the raw trace tuples,
+verified equal to `statistics("traceback")`, ~20× faster). This is done *after*
+`tracemalloc.stop()`, since analysing under tracing is ~20× slower. For each project frame the
+enclosing scope comes from `ast` (innermost def/class; decorators count for diff matching;
+same-qualname scopes such as a property getter and setter are merged). *self* = bytes whose
+most recent project frame is the function; *cumulative* = bytes with the function anywhere in
+the stack (counted once per trace). The cumulative number is what makes retention bugs
+("new cache around an unchanged loader") blame the changed caller.
 
-**Noise.** Run each commit `N` times (default 3), take the median, and store min/max. A change is "significant" only if it exceeds a noise band (start with `max(spread, 1% of peak)` times a factor of 2; tune on real data).
+**Noise band.** `max(2 × spread, 2 % of the larger median, 64 KiB)`.
 
-**Diff mapping.** `git diff -U0 A B -- '*.py'`, parse `@@ -a,b +c,d @@` hunk headers, and check whether the attributed function's line range at B intersects the new-side hunk range. If not, flag the result as **indirect** (memory grew in function X but the change was in a caller or config) and list the changed functions nearby.
+**Blame.** Functions whose cumulative delta is ≥ 10 % of the unit delta are candidates. A
+candidate is *changed* if its range at head intersects a new-side hunk, **or its range at base
+intersects an old-side hunk** (needed for improvements where the allocating code was deleted).
+Among changed candidates within 90 % of the best: prefer the most *self* bytes, i.e. the
+deepest. Result: `direct`, `indirect` (nothing changed explains it; changed functions are
+listed) or `unattributed` (with a note when truncated stacks hide > 5 % of the memory). Hot
+lines come from head for growth and from base for memory that went away; `allocated_at` is
+added when the blamed function mostly *keeps* memory allocated elsewhere.
 
-**Cache.** Key = commit SHA + workload hash + Python version. Store JSON under `.memblame/cache/`.
+**Adaptive range.** Measure both ends; if they differ significantly (any unit, any metric,
+validity or outcome), measure the midpoint and recurse. Cost is about log₂ N per change. Known
+blind spot: a change undone later within one unsplit segment (`--all` covers it).
 
-**Bisect.** Given `--good`, `--bad` and a threshold, binary-search over `git rev-list --first-parent`. Memory is not always monotonic, so verify the found commit against its parent and fall back to a linear scan on inconsistency.
+**Bisect.** It picks the unit and metric with the largest relative growth (or `--unit` /
+`--metric`) and a threshold (`200MB`, `+20MB`, `+10%`, default: the noise band). It
+binary-searches the first-parent chain and reports `monotonic: false` plus a warning if the
+measured points are not good…good,bad…bad.
 
-**Environment pitfall (important).** If the project is installed editable (`pip install -e .`), imports may resolve to the main checkout instead of the worktree. After each run verify that the project's modules have `__file__` inside the worktree; if not, mark the commit result `invalid_environment` instead of reporting wrong numbers. Support a `pythonpath` setting for `src/` layouts.
+**Cache.** `.memblame/cache/<sha>-<key>.json` (with a `.gitignore`), keyed by the settings,
+interpreter version + installed distributions, runner source hash and schema. Attribution
+is added to the cached entry when it is computed.
 
-## 5. Repo layout
+**Environment check.** After the run, any imported module whose top-level name is a project
+package (found in root, `src/` and the configured paths) but whose `__file__` is outside the
+checkout makes the result `invalid_environment` (never cached, no findings).
+
+**Contract.** `--json` output has `"schema": 1`. Exit code 3 = significant increase found.
+
+## 5. Repo layout (as built)
 
 ```
-memblame/
-  pyproject.toml
-  README.md
-  PROJECT.md              <- this file
-  src/memblame/
-    cli.py                # commands: run, range, diff, bisect
-    runner.py             # subprocess entry: start tracemalloc, run workload, emit JSON
-    worktree.py           # create/cleanup git worktrees
-    measure.py            # N runs, median, noise band, peak polling thread
-    attribute.py          # traceback -> project frame -> enclosing function (ast)
-    gitdiff.py            # parse git diff -U0 hunks, map to functions
-    cache.py
-    report.py             # terminal table + JSON output
-  tests/
-    fixture_repo.py       # generates a small git repo with a planted regression
-    test_*.py
-  examples/
-  vscode-ext/             # Phase 5, separate package, talks to CLI via JSON
+src/memblame/
+  cli.py       argparse commands, config from [tool.memblame] / memblame.toml
+  api.py       Session (cache, memo, worktree), run / diff / range_ / bisect
+  measure.py   fast runs, lazy attribution, Cache, interpreter discovery
+  runner.py    subprocess entry (stdlib only; also imported for its AST helpers)
+  blame.py     noise band, ChangeMap (both diff sides), verdicts
+  git.py       worktree pool, hunks, commit metadata
+  report.py    terminal output
+tests/
+  fixture_repo.py      planted (direct + retention) and clean repos, flat or src layout
+  test_units.py        section 8 assumptions + parsers/scopes
+  test_integration.py  end-to-end on generated repos
+vscode-ext/
+  src/extension.ts     commands, interpreter resolution, webview, CodeLens, decorations
+  src/cli.ts           spawn bundled engine, progress parsing       (vscode-free)
+  src/render.ts        report HTML + SVG chart (VS Code theme vars) (vscode-free)
+  src/workload.ts      test discovery / workload suggestions       (vscode-free)
+  scripts/bundle-python.js   copies src/memblame into the VSIX
+  scripts/screenshot.js      renders a report with headless Chrome (docs images)
+  test/                node unit tests + real-VS Code integration test
 ```
 
-Config file `memblame.toml` (optional): `workload`, `runs`, `pythonpath`, `project_paths`, `threshold`.
+## 6. Build plan: done, see the status table. Remaining work is in section 12.
 
-## 6. Step-by-step build plan
+## 7. Testing strategy (as built)
 
-Each phase has an acceptance test. Do not start a phase until the previous one passes.
+- Planted fixture: `direct` (peak +28 MB in `load_rows`) and `retention` (retained +58 MB,
+  blamed on the changed `summarize`, allocated in the unchanged `load_rows`). Tests assert the
+  exact commits, metrics and functions, for `diff`, adaptive and exhaustive `range` (same
+  findings), `bisect` and pytest per-test units.
+- Clean fixture: no findings; adaptive range measures only the 2 ends.
+- Noise: same commit twice stays under ¼ of the band.
+- Environment: src layout + PYTHONPATH pointing at another checkout gives `invalid`; the
+  default auto-detection gives valid.
+- Real-world regressions turned into tests: a removed allocation inside a property setter
+  (markdown-it-py) and a peak that lives only inside one C call (hook fallback).
+- Uncommitted changes, worktree cleanup, CLI JSON and exit codes, workload errors.
 
-### Phase 0 — Smallest working spike (1 script)
-Take two commit SHAs and a workload. Run it at both commits (worktrees), print peak memory for each and the top functions by growth.
-**Done when:** on the fixture repo (see section 7) it names the right function.
+## 8. Assumptions: results of the experiments
 
-### Phase 1 — Real CLI for one commit and a diff
-- `memblame run --rev <sha>` prints the JSON result.
-- `memblame diff A B` prints function-level delta and hunk mapping.
-- Implement the worktree cleanup, environment-validity check, and 3-run median.
-**Done when:** planted-regression test passes and a no-regression fixture reports no significant change.
+1. **Traceback order**: confirmed oldest → most recent on 3.12 and 3.14 (`tb[-1]` = allocator).
+2. **Peak snapshot**: the original polling-thread plan got 98.5 % coverage but took *many*
+   snapshots while memory climbed (3.9× slower). What works: prime with the fast-run peak;
+   poll (tomlkit: 98.3 % coverage, 11 s) and fall back to the profile hook only if coverage
+   < 90 % (hook alone: 98.0 %, 144 s). The hook is needed for C-call-only peaks (polling and
+   Python-return-only hooks get 0 % there). A snapshot costs a constant ~0.7 KB of traced
+   memory, however many traces exist.
+3. **numpy**: the assumption was wrong in our favour. numpy reports its buffers to
+   tracemalloc (an 80 MB array shows as 80 MB). Other native libraries may not.
+4. **Windows worktrees**: not tested yet (no Windows machine). Code uses short temp paths,
+   pathlib, no shell. Still to verify.
+5. **pytest overhead**: made irrelevant: tracing starts and stops inside
+   `pytest_runtest_protocol`, so collection/import is never measured.
+6. **New: tracing cost depends on the frames actually captured**, not on `nframe`: 1 frame is
+   ~6× slower than untraced; under pytest (≈40 frames of pytest internals) 16 frames cost 2×
+   and 32 frames 5× more than 8. Deeply recursive code (pyparsing) was 6 s at 1 frame and
+   36 s at 16. That is why the numbers come from 1-frame runs and attribution is lazy.
+7. **New: determinism**: fast runs of the same commit differ by a few KB; across 33
+   markdown-it-py commits the largest non-change was 36 KB on 7.5 MB.
 
-### Phase 2 — Range and cache
-- `memblame range main~20..main` runs every commit (first-parent), with caching, and prints the timeline.
-**Done when:** a second run of the same range is near-instant and results are identical.
+## 9. Risks and honest limits (also in README)
 
-### Phase 3 — Bisect
-- `memblame bisect --good X --bad Y --threshold 200MB`.
-**Done when:** it finds the planted commit in about log2(N) measurements.
+- tracemalloc misses native allocations that bypass Python's allocator (memray backend later).
+- Tracing is slow; choose small deterministic workloads. Attribution can be 10–40× slower on
+  allocation-heavy or recursive code, but it only runs where a change was found.
+- The environment is fixed across commits (current dependencies).
+- `script:`/`call:` workloads include import-time memory (a new `import unittest` shows up,
+  which is correct but can surprise); `pytest:` workloads do not.
+- Adaptive range blind spot (see section 4).
+- "Indirect" verdicts are flagged, not guessed.
 
-### Phase 4 — Validate on a real open-source repo
-- Pick a public Python project with deterministic tests and a known memory-related issue or a commit that plausibly increased memory. Run the tool. Record real numbers, variance and false positives.
-- Fix whatever breaks (imports, editable installs, slow workloads).
-**Done when:** you have at least one real, explainable finding, or an honest write-up of why the tool could not find one.
+## 10. Real-world validation (Phase 4)
 
-### Phase 5 — VS Code extension (thin UI)
-- Commands: "MemBlame: Analyze range", "MemBlame: Find regression".
-- Webview timeline (simple SVG or Chart.js): x = commits, y = peak MB; click a point to show commit info, top functions and the diff hunk; click a function to open the file.
-- CodeLens above functions: "+38 MB vs main".
-- The extension only calls the CLI with `--json`. No shared code with the engine.
-**Done when:** the demo GIF flow works end to end.
+Fixed benchmark scripts outside the repos (`script:/abs/path`), one venv per repo with its
+deps but not the project, Python 3.12, adaptive range. Each finding was checked by hand
+against the diff.
 
-### Phase 6 — Optional extras (only after the above)
-- memray backend for native allocations (Linux/macOS only).
-- Uncommitted working tree vs `HEAD` comparison.
-- GitHub Action that fails a PR if memory grows past a threshold.
-- Optional Claude explanation of "why this hunk allocates more".
-- MCP wrapper exposing `find_memory_regression`.
+| repo, range | commits / measured | finding | verified cause |
+|---|---|---|---|
+| markdown-it-py `v4.0.0..HEAD` (exhaustive) | 33 / 33 | none | largest step +36 KB on 7.5 MB (a new preset); no false positives |
+| markdown-it-py `v2.0.0..HEAD` | 137 / 19 | `f52249e` peak −1.6 MB (−17 %), direct `StateBase.src` | removed `tuple(ord(c) for c in src)` in the setter |
+| | | `6649229` peak −0.5, retained −0.7 MB | `Token` → dataclass |
+| | | `145a484` peak −0.3 MB (indirect) | `__slots__` on dataclasses (the saving shows up in callers) |
+| tomlkit `0.11.0..HEAD` | 234 / 21 | `231370c` peak **−66 %** (59.5 → 20.1 MB), direct `Source.__init__` | stops materializing the source |
+| | | `ae1b679` peak **+4.4 %**, direct `Container.__init__` | a new `dict` + `set` per `Container` (a speed/memory trade-off) |
+| | | `a766d3a` retained +0.8 MB, module level `items.py` | new `import dataclasses` + generated code |
+| pyparsing `3.1.0..HEAD` | 511 / 11 | `cd081ef` retained +1.6 MB, module level `testing.py` | `import unittest` added; `pyparsing/__init__` imports `testing`, so **every `import pyparsing` now loads unittest (+1.46 MB, +23 %)**, still true at HEAD |
 
-## 7. Testing strategy
+Bugs found this way and fixed: old-side blame for improvements, property getter/setter
+ranges, repeated warnings, slow hook-only peak capture, and (via the VS Code integration test)
+macOS `/var` vs `/private/var` path mismatch that hid CodeLens.
 
-- **Planted-regression fixture.** `fixture_repo.py` builds a temporary git repo with about 10 commits. One commit makes a function hold a large list (tens of MB). Assert the tool reports exactly that commit and that function. All tests run against this generated repo, never against a real repo.
-- **Negative fixture.** No memory change across commits, so no commit is flagged (guards against false positives from noise).
-- **Noise test.** Repeat measurements of the same commit and assert the variance stays inside the noise band.
-- **Environment test.** An editable-install scenario where imports would resolve outside the worktree must produce `invalid_environment`.
-- **Cross-platform.** Use `pathlib`, avoid shell-only features, keep temp paths short (Windows path-length limits with worktrees).
+Possible upstream contribution / demo story: the pyparsing `unittest` import (a lazy import
+inside the function that needs it would fix it). Re-check at the current HEAD before reporting.
 
-## 8. Assumptions to verify early (write a small test for each)
+## 11. Demo and positioning
 
-1. Ordering of frames in `tracemalloc.Traceback` (docs say oldest to most recent since Python 3.7; confirm and pick the correct "most recent project frame").
-2. Overhead and accuracy of the polling-thread "peak snapshot" approach; measure on a real workload.
-3. `tracemalloc` misses allocations from C code that calls `malloc` directly; confirm with a numpy example and document the limit.
-4. `git worktree` behavior on Windows (locking, cleanup, long paths).
-5. That pytest's own import/collection overhead is constant across commits (so it cancels in deltas).
+- Screenshots: `vscode-ext/media/report-range.png`, `report-diff.png` (regenerate with
+  `node scripts/screenshot.js <json> <png>`).
+- Still to make: the 20 s GIF (lens "Memory vs HEAD" → report → click function → CodeLens).
+- Story: "memblame found that since pyparsing 3.3 every `import pyparsing` loads `unittest`",
+  or the tomlkit −66 % commit, with numbers and noise.
+- Claim: *"Per-commit Python memory regression tracking with function-level blame, in your
+  editor."* No "first ever".
 
-## 9. Risks and honest limits (put these in the README)
+## 12. Next steps / publishing checklist
 
-- `tracemalloc` sees Python-allocator memory and tracemalloc-aware C allocations, not all native memory. Backend with memray later.
-- Tracing slows the workload; use small, deterministic workloads.
-- Different dependency versions across commits make results unreliable; MVP assumes a fixed environment.
-- Non-deterministic tests produce noisy numbers; require a deterministic workload and show variance.
-- "Indirect" attributions (memory grew in one function because a caller changed) are flagged, not guessed.
+Must do before publishing (needs you):
+1. Pick the final name and check that it is free on PyPI and the VS Code Marketplace.
+2. Create a Marketplace publisher; set `publisher` and `repository.url` in
+   `vscode-ext/package.json` (currently `memblame` / `OWNER`), set the copyright holder in
+   `LICENSE`.
+3. Push to GitHub, add CI (pytest + ruff on Linux/macOS/**Windows**, extension tests).
+4. `python -m build && twine upload` for the CLI; `npx vsce publish` (and Open VSX for
+   Cursor/VSCodium users) for the extension.
+5. Record the GIF.
 
-## 10. Demo and positioning
+Worth doing next (in order of value):
+1. Windows run of the test suite (assumption 4).
+2. A GitHub Action: `memblame diff origin/main HEAD` on PRs, comment with the finding,
+   fail on exit code 3.
+3. Pytest-plugin-style workload: "all tests in a directory" is supported, but the report
+   should rank tests by change.
+4. memray backend for native memory (Linux/macOS).
+5. MCP tool `find_memory_regression`; optional LLM explanation of a hunk.
 
-- Demo asset: a 20-second GIF: timeline chart, spike at one commit, click, function and hunk highlighted.
-- LinkedIn story: run it on a real repo and show one real finding with numbers and variance.
-- Claim: *"Per-commit Python memory regression tracking with function-level blame, in your editor."* Do not claim "first ever".
+## 13. Working agreement for Claude Code
 
-## 11. Working agreement for Claude Code
-
-- Read this file first. Build **one phase at a time**, and stop after each phase to show the acceptance test passing.
-- Write the fixture repo and the failing test before the feature.
-- Keep the core dependency-free (stdlib only). Ask before adding any dependency.
-- Keep the engine independent of VS Code; the JSON output schema is the contract, so version it (`"schema": 1`).
-- Do not add features outside the current phase. If something in section 8 turns out false, stop and tell me before redesigning.
-- Prefer small, readable functions and type hints; run `ruff` and `pytest` before saying a phase is done.
-
-### Suggested prompts to paste into Claude Code, in order
-
-1. "Read PROJECT.md. Implement `tests/fixture_repo.py` that generates a temp git repo with a planted memory regression and a no-regression variant. No tool code yet. Show me the generated history."
-2. "Implement Phase 0 as a single script that measures two commits using git worktrees and tracemalloc, and make it pass on the fixture. Verify assumption 1 in section 8 with a small test."
-3. "Turn the spike into the CLI (Phase 1): `run` and `diff`, 3-run median, worktree cleanup, and the invalid-environment check with its test."
-4. "Implement Phase 2 (range + cache) and Phase 3 (bisect) with tests on the fixture."
-5. "Help me run the tool on a real open-source repo (Phase 4). Log every failure and fix it, then summarize findings with variance."
-6. "Build the VS Code extension (Phase 5) as a thin UI over the CLI's `--json` output."
+- Read this file first. Keep the core stdlib-only; ask before adding dependencies.
+- The JSON output schema is the contract with the extension; bump `"schema"` on breaking
+  changes.
+- Run `pytest`, `ruff check src tests` and `cd vscode-ext && npm test` before calling
+  anything done.
+- If an assumption in section 8 turns out false, stop and report before redesigning.
