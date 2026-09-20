@@ -102,20 +102,26 @@ def scopes_from_source(source: str) -> list[tuple[int, int, int, str]]:
     `def_line` is the line of the `def`/`class` keyword (frames inside the body never point
     above it); `first_line` includes decorators and is used for diff-hunk matching.
     """
-    import ast
-
     try:
         tree = _parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         # Generated code can be too deep or too complex for the parser (which exception says
-        # so depends on the Python version). Like a syntax error that means "no scopes in
-        # this file", never a reason to abort an analysis that has already measured its
-        # commits.
+        # so, and at what depth, depends on the Python version and the platform). Like a
+        # syntax error that means "no scopes in this file", never a reason to abort an
+        # analysis that has already measured its commits.
         return []
+    return _scopes_of(tree)
+
+
+def _scopes_of(tree) -> list[tuple[int, int, int, str]]:
+    """The scopes in a parsed tree, walking it with an explicit stack instead of recursion.
+
+    A deep tree that did parse must not cost the file its scopes because the walk ran into
+    the recursion limit. The result is sorted, so visit order does not matter.
+    """
+    import ast
+
     out: list[tuple[int, int, int, str]] = []
-    # An explicit stack, not recursion: a deep tree that did parse must not cost the file its
-    # scopes because the walk ran into the recursion limit (which one gave out first used to
-    # depend on the Python version). `out` is sorted below, so visit order does not matter.
     pending: list[tuple[ast.AST, str]] = [(tree, "")]
     while pending:
         node, prefix = pending.pop()

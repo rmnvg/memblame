@@ -11,6 +11,7 @@ from memblame import api, blame, git
 from memblame.runner import (
     Attributor,
     _grouped_traces,
+    _scopes_of,
     check_environment,
     innermost_scope,
     scopes_from_source,
@@ -178,11 +179,22 @@ def test_source_too_deeply_nested_to_parse_yields_no_scopes():
     assert scopes_from_source("def (:\n") == []
 
 
-def test_a_deep_tree_that_parses_keeps_its_scopes():
-    """The walk over the tree is iterative. Recursing over 3 000 levels hit the recursion
-    limit (1 000) and threw away every scope in the file, though the file had parsed fine."""
-    src = "TOTAL = " + "+".join(["1"] * 3_000) + "\n\ndef after():\n    return TOTAL\n"
-    assert [scope[3] for scope in scopes_from_source(src)] == ["after"]
+def test_a_deep_tree_keeps_its_scopes():
+    """The walk over a tree is iterative. Recursing over thousands of levels hit the recursion
+    limit (1 000) and threw away every scope in the file, though the file had parsed fine.
+
+    The tree is built by hand rather than parsed: how deep the parser will go is a property
+    of the Python build and the platform (3.12 on Windows refuses a chain that macOS accepts),
+    and this tests the walk, not the parser.
+    """
+    import ast
+
+    tree = ast.parse("def after():\n    pass\n")
+    deep = ast.Constant(value=1)
+    for _ in range(5_000):
+        deep = ast.BinOp(left=deep, op=ast.Add(), right=ast.Constant(value=1))
+    tree.body.insert(0, ast.Expr(value=deep))
+    assert [scope[3] for scope in _scopes_of(tree)] == ["after"]
 
 
 def test_parsing_deep_source_does_not_depend_on_the_callers_stack(tmp_path):
