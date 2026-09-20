@@ -59,8 +59,10 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-# The optional 3.9/3.10 TOML fallback; absent on 3.11+, where tomllib is used instead.
-module = ["tomli"]
+# Both are optional at runtime and deliberately not dependencies: tomli is the 3.9/3.10 TOML
+# fallback (absent on 3.11+, where tomllib is used), and runner.py imports pytest lazily
+# inside the *project's* interpreter, which is where the workload's pytest lives.
+module = ["tomli", "pytest"]
 ignore_missing_imports = true
 
 [tool.ruff]

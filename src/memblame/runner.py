@@ -54,6 +54,48 @@ NOT_PROJECT_MODULES = {"tests", "test", "conftest", "setup", "docs", "examples",
 # --------------------------------------------------------------------------- AST scopes
 
 
+PARSE_STACK_BYTES = 64 * 1024 * 1024  # 8x Linux/macOS's default stack, 64x Windows's
+
+
+def _parse(source: str):
+    """`ast.parse`, on a thread whose stack is big enough for a deep tree.
+
+    Python 3.9 (fixed later) turns the parsed tree into Python objects with C recursion and
+    no depth check, so an unbounded chain (`1+1+1+...`, a long `elif` ladder: generated code)
+    overflows the C stack and kills the interpreter outright. No `except` can catch that. A
+    stack is 8 MB on Linux and macOS but only 1 MB on Windows, where 20 000 terms already
+    crash it, so the parse gets a stack of its own instead of whatever the caller's platform
+    happened to give it. Exceptions cross the thread boundary and are raised in the caller.
+    """
+    import ast
+    import threading
+
+    box: list = []
+
+    def work() -> None:
+        try:
+            box.append((True, ast.parse(source)))
+        except BaseException as exc:  # noqa: BLE001 - re-raised below, in the caller
+            box.append((False, exc))
+
+    previous = None
+    try:
+        previous = threading.stack_size(PARSE_STACK_BYTES)
+        thread = threading.Thread(target=work)
+        thread.start()
+    except (RuntimeError, ValueError):
+        # No threads, or none this large, here: parse in place, exactly as before.
+        return ast.parse(source)
+    finally:
+        if previous is not None:
+            threading.stack_size(previous)  # a process-wide setting; put it back
+    thread.join()
+    ok, value = box[0]
+    if not ok:
+        raise value
+    return value
+
+
 def scopes_from_source(source: str) -> list[tuple[int, int, int, str]]:
     """Return (def_line, first_line, end_line, qualname) for each function and class.
 
@@ -62,27 +104,30 @@ def scopes_from_source(source: str) -> list[tuple[int, int, int, str]]:
     """
     import ast
 
+    try:
+        tree = _parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        # Generated code can be too deep or too complex for the parser (which exception says
+        # so depends on the Python version). Like a syntax error that means "no scopes in
+        # this file", never a reason to abort an analysis that has already measured its
+        # commits.
+        return []
     out: list[tuple[int, int, int, str]] = []
-
-    def visit(node, prefix: str) -> None:
+    # An explicit stack, not recursion: a deep tree that did parse must not cost the file its
+    # scopes because the walk ran into the recursion limit (which one gave out first used to
+    # depend on the Python version). `out` is sorted below, so visit order does not matter.
+    pending: list[tuple[ast.AST, str]] = [(tree, "")]
+    while pending:
+        node, prefix = pending.pop()
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 name = f"{prefix}{child.name}"
                 first = min([d.lineno for d in child.decorator_list] + [child.lineno])
                 out.append((child.lineno, first, child.end_lineno or child.lineno, name))
                 inner = "<locals>." if not isinstance(child, ast.ClassDef) else ""
-                visit(child, f"{name}.{inner}")
+                pending.append((child, f"{name}.{inner}"))
             else:
-                visit(child, prefix)
-
-    try:
-        # Both steps, not just the parse: generated code (a chain of thousands of `+`, say)
-        # nests deeper than the recursion limit, and which of the two gives out first
-        # depends on the Python version. Like a syntax error this means "no scopes in this
-        # file", never a reason to abort an analysis that has already measured its commits.
-        visit(ast.parse(source), "")
-    except (SyntaxError, ValueError, RecursionError):
-        return []
+                pending.append((child, prefix))
     out.sort()
     return out
 

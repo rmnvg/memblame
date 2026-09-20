@@ -165,17 +165,63 @@ deleted file mode 100644
 
 
 def test_source_too_deeply_nested_to_parse_yields_no_scopes():
-    """Generated code (a chain of thousands of `+`) nests deeper than ast.parse can go.
+    """Generated code (a chain of thousands of `+`) can be too deep for the parser.
 
     That raised RecursionError out of scopes_from_source, which aborted the whole analysis
     after both commits had already been measured. Unparsable means no scopes, as for a
-    syntax error. Which step gives out first is version-dependent -- ast.parse on 3.12, the
-    tree walk on 3.9 and 3.14 -- so the CI matrix exercises both.
+    syntax error. (The source has no definitions, so [] is right whether or not the parse
+    gave out: 3.12's parser raises, 3.9's and 3.14's succeed.)
     """
     generated = "TOTAL = " + "+".join(["1"] * 60_000) + "\n"
     assert scopes_from_source(generated) == []
     # A syntax error already behaved this way; keep them consistent.
     assert scopes_from_source("def (:\n") == []
+
+
+def test_a_deep_tree_that_parses_keeps_its_scopes():
+    """The walk over the tree is iterative. Recursing over 3 000 levels hit the recursion
+    limit (1 000) and threw away every scope in the file, though the file had parsed fine."""
+    src = "TOTAL = " + "+".join(["1"] * 3_000) + "\n\ndef after():\n    return TOTAL\n"
+    assert [scope[3] for scope in scopes_from_source(src)] == ["after"]
+
+
+def test_parsing_deep_source_does_not_depend_on_the_callers_stack(tmp_path):
+    """On Python 3.9 `ast.parse` recurses in C without a depth check, so a long enough chain
+    overflows the C stack and kills the interpreter -- no `except` can catch that. A stack is
+    8 MB on Linux and macOS but 1 MB on Windows, where CI died with `Windows fatal exception:
+    stack overflow` on 3.9. Reproduce that stack here on every platform: a caller thread
+    with 1 MB, parsing 60 000 terms. Only the process surviving matters, so run it in one.
+    """
+    import os
+    import subprocess
+    import sys
+
+    child = textwrap.dedent("""
+        import threading
+        from memblame.runner import scopes_from_source
+
+        threading.stack_size(1 << 20)  # what Windows gives its main thread
+        out = []
+
+        def work():
+            src = "TOTAL = " + "+".join(["1"] * 60_000) + "\\ndef after():\\n    return TOTAL\\n"
+            out.append([scope[3] for scope in scopes_from_source(src)])
+
+        thread = threading.Thread(target=work)
+        thread.start()
+        thread.join()
+        print(out[0])
+    """)
+    script = tmp_path / "deep_parse.py"  # a file, not -c: no command-line quoting to trust
+    script.write_text(child, encoding="utf-8")
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    inherited = os.environ.get("PYTHONPATH", "")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(src_dir), inherited]))}
+    proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                          env=env, timeout=120)
+    assert proc.returncode == 0, (proc.returncode, proc.stderr[-500:])
+    # 3.12's parser gives up (RecursionError -> no scopes); 3.9's and 3.14's succeed.
+    assert proc.stdout.strip() in ("[]", "['after']"), proc.stdout
 
 
 @pytest.mark.parametrize("subject", [

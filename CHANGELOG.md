@@ -31,10 +31,15 @@ The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/
   legitimately contain; records are now separated by newline, the one byte git guarantees
   is absent (it joins a multi-line subject with spaces and strips newlines from an ident).
   Not `str.splitlines()`, which also breaks on `\x1c`-`\x1e`, `\x85` and U+2028/9.
-- A Python file too deeply nested for `ast.parse` (generated code: a chain of thousands of
-  `+`) raised `RecursionError` out of `scopes_from_source` and aborted the whole analysis
-  *after* both commits had been measured. Unparsable now means "no scopes in this file",
-  exactly as a syntax error already did.
+- A Python file too deeply nested to parse (generated code: a chain of thousands of `+`, a
+  long `elif` ladder) aborted the whole analysis *after* both commits had been measured, and
+  on Windows with Python 3.9 killed the interpreter outright (`Windows fatal exception: stack
+  overflow`). 3.9's `ast.parse` recurses in C with no depth check, so no `except` can catch
+  it; a stack is 8 MB on Linux and macOS but 1 MB on Windows, where 20 000 terms already
+  crash it. The parse now runs on a thread with a 64 MB stack of its own (chains of 100 000+
+  terms), and the walk over the tree is iterative, so a deep tree that parses keeps its
+  scopes instead of losing them to the recursion limit. What still cannot be parsed means
+  "no scopes in this file", exactly as a syntax error already did.
 - `--cache-input` pointing at a device or FIFO hung for ever with nothing printed, since
   the read never reaches EOF. Only regular files are read now; a declared directory already
   filtered these out.
@@ -83,6 +88,10 @@ The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/
 - The release workflow checks the tag against `vscode-ext/package.json` as well as the
   package version, so a tag cannot publish a mismatched extension.
 - `bundle-python.js` copies `py.typed` into the bundled engine.
+- mypy ignores the missing `pytest` import. `runner.py` imports it lazily inside the
+  *project's* interpreter, so it is deliberately not a memblame dependency; the `types` CI
+  job, whose environment has only memblame and mypy, failed on it while a development
+  environment that happens to have pytest installed passed.
 - The extension's integration harness and the screenshot script remove their temp
   directories; each run used to leave one behind (the harness, a fixture repo plus a VS Code
   user-data dir, tens of MB).
