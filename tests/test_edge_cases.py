@@ -429,6 +429,8 @@ def test_background_process_left_behind_by_a_finished_run_is_removed(tmp_path):
     r = Repo(tmp_path / "repo")
     marker = tmp_path / "left.pid"
     bench = ("import os, subprocess, sys, time\n"
+             # runs repeat: a marker left by the previous run would satisfy the wait below
+             f"if os.path.exists({str(marker)!r}): os.remove({str(marker)!r})\n"
              f"subprocess.Popen([sys.executable, '-c', {_detached_child_code(marker, 60)!r}])\n"
              f"for _ in range(400):  # exit only once the child is provably running\n"
              f"    if os.path.exists({str(marker)!r}) and os.path.getsize({str(marker)!r}):\n"
