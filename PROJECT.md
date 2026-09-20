@@ -2,7 +2,7 @@
 
 Working name: `memblame`. Change it any time.
 
-## 0. Status (2026-09-19)
+## 0. Status (2026-09-20)
 
 | Phase | State | Evidence |
 |---|---|---|
@@ -12,9 +12,9 @@ Working name: `memblame`. Change it any time.
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
 | 5 VS Code extension | done; VSIX builds (~400 KB) | 15 node tests + 7-step integration test in real VS Code 1.131 |
-| 6 Extras | not started | section 12 |
+| 6 Portable CI reports | done | Markdown + self-contained interactive HTML, all commands |
 
-Test suites: `pytest` (103 tests, ~140 s in the latest local macOS run),
+Test suites: `pytest` (108 tests, ~130 s in the latest local macOS run),
 `ruff check src tests`, `cd vscode-ext && npm test` (15), `npm run test:integration`
 (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
@@ -164,6 +164,7 @@ src/memblame/
   blame.py     noise band, ChangeMap (both diff sides), verdicts
   git.py       worktree pool, hunks, commit metadata
   report.py    terminal output
+  artifact.py  Markdown and self-contained HTML CI reports
 tests/
   fixture_repo.py      planted (direct + retention) and clean repos, flat or src layout
   test_units.py        section 8 assumptions + parsers/scopes
@@ -298,8 +299,8 @@ Release checks:
 Worth doing next (in order of value):
 1. Verify Windows CI results for the release commit and test the extension interactively
    on Windows (including interpreter selection, paths with spaces and cancellation).
-2. A GitHub Action: `memblame diff origin/main HEAD` on PRs, comment with the finding,
-   fail on exit code 3 or an incomplete/error result (exit code 1).
+2. A GitHub Action wrapper that posts the Markdown report on PRs; the CLI already produces
+   Markdown/HTML artifacts and fails on exit code 3 or an incomplete/error result (exit code 1).
 3. Pytest-plugin-style workload: "all tests in a directory" is supported, but the report
    should rank tests by change.
 4. memray backend for native memory (Linux/macOS).

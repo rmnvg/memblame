@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from memblame import api, cli, measure, report
+from memblame import api, artifact, cli, measure, report
 
 sys.path.insert(0, str(Path(__file__).parent))
 from fixture_repo import make_repo  # noqa: E402
@@ -99,6 +99,76 @@ def test_bisect_rejects_unknown_unit_and_already_exceeded_threshold(planted, cap
     code, out, err = run_cli(capsys, "bisect", *endpoints, "--threshold", "1B", *common)
     assert code == 1 and "good commit" in err and "already exceeds the threshold" in err
     assert json.loads(out)["kind"] == "error"
+
+
+def _report_header(kind):
+    return {"schema": 1, "kind": kind, "repo": "/repo", "workload": "call:pkg:run",
+            "python": "/python", "warnings": []}
+
+
+def _report_commit(short, subject):
+    return {"sha": short * 6, "short": short, "subject": subject, "author": "A. Dev"}
+
+
+def _report_unit(peak, retained):
+    return {"outcome": "passed", "peak": {"median": peak, "min": peak, "max": peak},
+            "end": {"median": retained, "min": retained, "max": retained}}
+
+
+@pytest.mark.parametrize("data,needle", [
+    ({**_report_header("run"), "commit": _report_commit("aaaaaaa", "measure"),
+      "result": {"valid": True, "runs": 1,
+                 "units": {"workload": _report_unit(1_000_000, 100_000)}}},
+     "Memory measurement"),
+    ({**_report_header("diff"), "base": _report_commit("aaaaaaa", "before"),
+      "head": _report_commit("bbbbbbb", "after"), "valid": True, "units": [],
+      "findings": []}, "Memory comparison"),
+    ({**_report_header("range"), "mode": "exhaustive", "measured": 2,
+      "points": [
+          {"commit": _report_commit("aaaaaaa", "before"), "measured": True,
+           "valid": True, "units": {"workload": _report_unit(1_000_000, 100_000)}},
+          {"commit": _report_commit("bbbbbbb", "after <unsafe>"), "measured": True,
+           "valid": True, "units": {"workload": _report_unit(2_000_000, 200_000)}},
+      ], "findings": []}, "Memory history"),
+    ({**_report_header("bisect"), "status": "found", "unit": "workload",
+      "metric": "peak", "threshold": 1_500_000, "steps": 1,
+      "culprit": _report_commit("bbbbbbb", "after"), "findings": [],
+      "measurements": [
+          {"commit": _report_commit("aaaaaaa", "before"), "value": 1_000_000,
+           "bad": False},
+          {"commit": _report_commit("bbbbbbb", "after"), "value": 2_000_000,
+           "bad": True},
+      ]}, "First bad commit"),
+])
+def test_portable_report_renderers_cover_every_command(data, needle):
+    markdown = artifact.markdown(data)
+    rendered_html = artifact.html_report(data)
+    assert needle in markdown and needle in rendered_html
+    assert rendered_html.startswith("<!doctype html>")
+    assert "Machine-readable result" in rendered_html
+    assert "<unsafe>" not in rendered_html
+    assert "<unsafe>" not in markdown
+    if data["kind"] == "range":
+        assert "<svg" in rendered_html and "line peak" in rendered_html
+
+
+def test_cli_writes_markdown_and_html_reports(planted, tmp_path, capsys):
+    args = ["diff", planted.commits["docstring"], planted.commits["direct"],
+            "-C", str(planted.path), "-w", planted.workload, *PY]
+    markdown_path = tmp_path / "reports" / "memblame.md"
+    code, out, err = run_cli(capsys, *args, "--report", "md", "-o", str(markdown_path))
+    assert code == 3 and out == ""
+    assert "wrote MD report" in err
+    assert "memory regression detected" in markdown_path.read_text()
+
+    html_path = tmp_path / "reports" / "memblame.html"
+    code, out, err = run_cli(capsys, *args, "--report", "html", "-o", str(html_path))
+    assert code == 3 and out == ""
+    assert "wrote HTML report" in err
+    rendered = html_path.read_text()
+    assert rendered.startswith("<!doctype html>")
+    assert "include raw payload in rows" in rendered
+    assert "shop/parse.py:4" in rendered
 
 
 # ------------------------------------------------------------------ errors are clean
