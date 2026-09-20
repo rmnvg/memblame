@@ -23,12 +23,14 @@ CI (`.github/workflows/ci.yml`) runs Linux/macOS/Windows × Python 3.9/3.12/3.14
 unit tests + VSIX build, and the real-VS Code integration test under xvfb on Linux. Supported
 Pythons: 3.9–3.14.
 
-**Windows status (one statement, so it cannot contradict itself):** the Python suite has
-run green on Windows CI for the commits before the trust-hardening pass. The process-tree code
-added in that pass (`taskkill /T`, `CREATE_NEW_PROCESS_GROUP`, portable pid checks in tests)
-has only been reviewed and unit-tested on POSIX; **its first Windows CI run is the acceptance
-test**. The extension has never been clicked through on Windows (interpreter selection, paths
-with spaces, cancellation): see section 12.
+**Windows status (one statement, so it cannot contradict itself):** verified in CI on
+`windows-latest` (Python 3.9/3.12/3.14): the whole Python suite, including the process-group
+termination tests, and the extension's unit tests plus the real-VS Code integration test
+(commit `c55bd18`, all 15 jobs green). That run found and fixed one Windows-only bug
+(`os.replace` "access denied" under concurrent cache writers). Not covered by anything
+automated: a person clicking through the extension on Windows (interpreter picker with a real
+Python extension installed, paths with spaces, Cancel during a long run), since the
+integration test runs with extensions disabled and no Windows machine is available.
 
 ## 1. One-paragraph summary
 
@@ -341,8 +343,8 @@ Release checks:
 5. Record the GIF.
 
 Worth doing next (in order of value):
-1. Verify Windows CI results for the release commit and test the extension interactively
-   on Windows (including interpreter selection, paths with spaces and cancellation).
+1. If a Windows user reports trouble, the untested areas are the Python-extension
+   interpreter picker, paths with spaces and Cancel; everything else runs on Windows CI.
 2. A GitHub Action wrapper that posts the Markdown report on PRs; the CLI already produces
    Markdown/HTML artifacts and fails on exit code 3 or an incomplete/error result (exit code 1).
 3. Pytest-plugin-style workload: "all tests in a directory" is supported, but the report
