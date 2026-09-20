@@ -26,9 +26,14 @@ let html = renderHtml(JSON.parse(fs.readFileSync(input, "utf8")), "doc", "'self'
 if (point) {
   html = html.replace("</body>", `<script>document.querySelector('.hit[data-point="${point}"]').dispatchEvent(new MouseEvent('click', {bubbles: true}));</script></body>`);
 }
-const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mb-shot-")), "report.html");
+const work = fs.mkdtempSync(path.join(os.tmpdir(), "mb-shot-"));
+const tmp = path.join(work, "report.html");
 fs.writeFileSync(tmp, html);
 const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-cp.execFileSync(chrome, ["--headless", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
-  `--window-size=${width},${height}`, `--screenshot=${path.resolve(output)}`, `file://${tmp}`], { stdio: "ignore" });
+try {
+  cp.execFileSync(chrome, ["--headless", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
+    `--window-size=${width},${height}`, `--screenshot=${path.resolve(output)}`, `file://${tmp}`], { stdio: "ignore" });
+} finally {
+  fs.rmSync(work, { recursive: true, force: true });  // Chrome has read the file by now
+}
 console.log(`wrote ${output}`);

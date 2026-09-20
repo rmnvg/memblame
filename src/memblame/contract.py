@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal, TypedDict
 
 MeasurementStatus = Literal["complete", "incomplete", "error"]
@@ -97,7 +98,7 @@ class PublicResult(TypedDict, total=False):
     verified: bool
 
 
-def validate_output(data: dict[str, Any]) -> PublicResult:
+def validate_output(data: Mapping[str, Any]) -> PublicResult:
     """Reject an accidental contract break before JSON or a human report is emitted."""
     if data.get("schema") != 1:
         raise ValueError(f"unsupported result schema {data.get('schema')!r}; expected 1")

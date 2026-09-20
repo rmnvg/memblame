@@ -64,6 +64,39 @@ export function chooseInterpreters(input: {
   return { launcher, project: input.selected };
 }
 
+/**
+ * The `environments` half of the Python extension's API, structurally typed so this module
+ * stays free of `vscode` imports and the glue below can be tested without an editor.
+ */
+export interface PythonEnvironmentsApi {
+  getActiveEnvironmentPath?(resource: unknown): { path: string } | undefined;
+  resolveEnvironment?(path: { path: string }): Promise<{ executable?: { uri?: { fsPath?: string } } } | undefined>;
+}
+
+/**
+ * The interpreter the Python extension has selected, or undefined when there is none.
+ *
+ * Every field here is optional in practice: the API has changed shape before, an
+ * environment may not be resolvable, and `resolveEnvironment` can reject. Anything
+ * unusable means "no selection", which leaves the CLI's own discovery in charge rather
+ * than failing the command.
+ */
+export async function selectedFromPythonApi(
+  environments: PythonEnvironmentsApi | undefined,
+  resource: unknown,
+): Promise<string | undefined> {
+  try {
+    const envPath = environments?.getActiveEnvironmentPath?.(resource);
+    if (!envPath) {
+      return undefined;
+    }
+    const env = await environments?.resolveEnvironment?.(envPath);
+    return env?.executable?.uri?.fsPath ?? envPath.path ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildArgs(common: {
   workload?: string;
   runs?: number;

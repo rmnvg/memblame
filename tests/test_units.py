@@ -164,6 +164,75 @@ deleted file mode 100644
 """
 
 
+def test_source_too_deeply_nested_to_parse_yields_no_scopes():
+    """Generated code (a chain of thousands of `+`) nests deeper than ast.parse can go.
+
+    That raised RecursionError out of scopes_from_source, which aborted the whole analysis
+    after both commits had already been measured. Unparsable means no scopes, as for a
+    syntax error. Which step gives out first is version-dependent -- ast.parse on 3.12, the
+    tree walk on 3.9 and 3.14 -- so the CI matrix exercises both.
+    """
+    generated = "TOTAL = " + "+".join(["1"] * 60_000) + "\n"
+    assert scopes_from_source(generated) == []
+    # A syntax error already behaved this way; keep them consistent.
+    assert scopes_from_source("def (:\n") == []
+
+
+@pytest.mark.parametrize("subject", [
+    "plain subject",
+    "holds \x1e a record separator",   # the byte this format used to end records with
+    "holds \x1c \x1d \x85 too",         # other things str.splitlines() breaks on
+    "holds \u2028 a line separator",
+    "holds \x00 a nul",                # last field, so maxsplit keeps it whole
+])
+def test_commit_metadata_survives_control_bytes_in_the_subject(subject):
+    """Only a newline is impossible in these fields; a subject may hold any other byte.
+
+    Parsing records on \x1e (or with str.splitlines(), which also breaks on \x1c-\x1e,
+    \x85 and U+2028/9) tore such a commit apart and failed with a bare unpack error.
+    """
+    record = "\x00".join(["a" * 40, "aaaaaaa", "An Author", "2026-01-01T00:00:00+00:00",
+                          subject])
+    commits = git._parse_commits(record + "\n")
+    assert len(commits) == 1
+    assert commits[0].subject == subject
+    assert commits[0].author == "An Author"
+
+
+def test_unparsable_commit_metadata_names_the_record():
+    with pytest.raises(git.GitError, match="could not parse commit metadata"):
+        git._parse_commits("not\x00enough\x00fields\n")
+
+
+BODY_LOOKS_LIKE_A_HEADER = "\n".join([
+    "diff --git a/bench.py b/bench.py",
+    "--- a/bench.py",
+    "+++ b/bench.py",
+    "@@ -2,2 +2,2 @@",
+    # Two deleted/added source lines that happen to read as a file-header pair. This file
+    # is full of them: the DIFF fixture below is exactly such a Python string.
+    '--- "unterminated sql comment',
+    "+++ new marker",
+    "@@ -9 +9 @@ def run():",
+    "-    return [0] * 100000",
+    "+    return [0] * 200000",
+]) + "\n"
+
+
+def test_hunk_body_is_never_mistaken_for_a_file_header():
+    """Inside a hunk every line carries a -/+ prefix, so source lines starting with `-- `
+    and `++ ` arrive as `--- ` and `+++ `. Reading those as file headers blamed later hunks
+    on a nonexistent path, and an unterminated quote aborted the analysis outright."""
+    hunks = git.parse_hunks(BODY_LOOKS_LIKE_A_HEADER)
+    assert [(h.file, h.new_range) for h in hunks] == [("bench.py", (2, 3)), ("bench.py", (9, 9))]
+
+
+@pytest.mark.parametrize("header", ['"a/unterminated.py', '"a/\\777.py"', '"'])
+def test_unparsable_quoted_path_is_used_verbatim(header):
+    """A name that is not a well-formed quoted path must never abort an analysis."""
+    assert isinstance(git._diff_path(header), str)
+
+
 def test_parse_hunks():
     hunks = git.parse_hunks(DIFF)
     assert [(h.file, h.new_range) for h in hunks] == [

@@ -26,6 +26,11 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 
+[project.optional-dependencies]
+# Reading memblame.toml / [tool.memblame] needs a TOML parser, which the standard library
+# only has from 3.11 (tomllib). The core stays dependency-free.
+toml = ["tomli>=1.1.0; python_version < '3.11'"]
+
 [project.urls]
 Homepage = "https://github.com/rmnvg/memblame"
 Issues = "https://github.com/rmnvg/memblame/issues"
@@ -44,6 +49,19 @@ memblame = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+files = ["src/memblame"]
+# The package ships py.typed, so its annotations are part of what users get. Not strict:
+# results are JSON-shaped dicts by design, and pinning python_version would flip the
+# version-dependent branches (importlib.metadata, Windows-only constants) to the other side.
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+# The optional 3.9/3.10 TOML fallback; absent on 3.11+, where tomllib is used instead.
+module = ["tomli"]
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from . import git
 from .runner import innermost_scope, scopes_from_source
@@ -23,8 +24,8 @@ MIN_COVERAGE = 0.9  # below this share of the peak, say that the snapshot is par
 TRUNCATED_NOTE = 0.05  # mention truncated stacks when they hide more than 5% of the memory
 
 
-EMPTY_SUMMARY = {"total": 0, "coverage": 0, "unattributed": 0, "truncated": 0, "functions": [],
-                 "lines": []}
+EMPTY_SUMMARY: dict[str, Any] = {"total": 0, "coverage": 0, "unattributed": 0, "truncated": 0,
+                                 "functions": [], "lines": []}
 
 
 def noise_band(a: dict, b: dict) -> int:

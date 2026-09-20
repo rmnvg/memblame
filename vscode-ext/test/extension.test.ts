@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { buildArgs, parseProgress, runMemblame, chooseInterpreters } from "../src/cli";
+import { buildArgs, parseProgress, runMemblame, chooseInterpreters, selectedFromPythonApi } from "../src/cli";
 import { MemblameResult, Point, parseEngineResponse } from "../src/contract";
 import { chartSvg, esc, mb, niceStep, renderHtml } from "../src/render";
 import { findTests, isTestFile, locateScope, moduleName, pytestWorkload, quoteWorkloadArg, suggestWorkloads, tomlDefinesKey, tomlDefinesWorkload } from "../src/workload";
@@ -200,6 +200,37 @@ test("locateScope finds the function in the current text, nearest to the old lin
   assert.equal(locateScope(text, "gone", 3), undefined);
 });
 
+test("a run result renders as a measurement table, not a raw JSON dump", () => {
+  const run: MemblameResult = {
+    schema: 1, kind: "run", repo: "/r", workload: "w", python: "p",
+    settings: { runs: 2, nframe: 16, timeout: 10, pythonpath: null },
+    measurement_status: "complete", warnings: [],
+    commit: { sha: "abc1234", short: "abc1234", subject: "a commit", author: "x" },
+    result: {
+      valid: true, runs: 2,
+      units: {
+        "tests/test_a.py::test_big": {
+          outcome: "passed",
+          peak: { median: 58_000_000, min: 57_900_000, max: 58_100_000 },
+          end: { median: 1_200_000, min: 1_200_000, max: 1_200_000 },
+          top: [{ id: "shop/parse.py::load_rows", self: 57_000_000, cumulative: 58_000_000 }],
+        },
+      },
+    },
+  };
+  const html = renderHtml(run, "N", "c");
+  assert.match(html, /Memory measurement/);
+  assert.match(html, /tests\/test_a\.py::test_big/);
+  assert.match(html, /58\.0 MB/);           // peak
+  assert.match(html, /shop\/parse\.py::load_rows/);  // the biggest holder
+  assert.match(html, /passed/);
+  assert.doesNotMatch(html, /<pre>/);        // used to fall through to a JSON dump
+  assert.doesNotMatch(html, /undefined|NaN/);
+
+  const broken: MemblameResult = { ...run, result: { valid: false, runs: 0, units: {} } };
+  assert.match(renderHtml(broken, "N", "c"), /Measurement unavailable/);
+});
+
 test("reports explain skipped commits and units that were not compared", () => {
   const diff: MemblameResult = {
     schema: 1, kind: "diff", repo: "/r", workload: "w", python: "p",
@@ -265,4 +296,97 @@ test("an incomplete range still shows its findings, under a banner, never as an 
   range.findings = [];
   const none = renderHtml(range, "N", "c");
   assert.match(none, /Measurement incomplete; no memory-regression conclusion/);
+});
+
+test("cancelling a run rejects and does not leave a worktree behind", async (t) => {
+  if (!fs.existsSync(path.join(bundled, "memblame", "cli.py"))) {
+    t.skip("python bundle missing");
+    return;
+  }
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mb-cancel-"));
+  const git = (...a: string[]) => cp.execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  try {
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    const slow = "import time\ndef run():\n    time.sleep(120)\n";
+    fs.writeFileSync(path.join(repo, "bench.py"), slow);
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    fs.writeFileSync(path.join(repo, "bench.py"), slow + "    # and again\n");
+    git("add", "-A");
+    git("commit", "-qm", "head");
+
+    // Cancel only once the engine has really started measuring, so a worktree exists.
+    let started: () => void;
+    let sawMeasuring = false;
+    const measuring = new Promise<void>((r) => (started = r));
+    const job = runMemblame({
+      python,
+      repo,
+      bundledPath: bundled,
+      args: ["diff", "HEAD~1", "HEAD", "--json", "-w", "call:bench:run",
+             "--python", python, "--runs", "1", "--no-cache", "-C", repo],
+      onProgress: (p) => { if (/measuring/.test(p.message)) { sawMeasuring = true; started(); } },
+    });
+    await Promise.race([measuring, new Promise((r) => setTimeout(r, 30_000))]);
+    // Otherwise the cancel below would prove nothing: the engine never got far enough to
+    // create a worktree, and any exit would look like a successful cancellation.
+    assert.ok(sawMeasuring, "engine never reached the measuring phase; cancel proves nothing");
+    job.cancel();
+    await assert.rejects(job.result, /cancelled/);
+
+    if (process.platform !== "win32") {
+      // SIGTERM reaches the CLI, which removes its worktree on the way out. Windows cancels
+      // with taskkill /F, so nothing runs there; the next run reclaims it instead (covered
+      // by test_stale_worktree_from_killed_run_is_removed on the Python side).
+      const listed = cp.execFileSync("git", ["worktree", "list"], { cwd: repo, encoding: "utf8" });
+      assert.equal(listed.trim().split("\n").length, 1, listed);
+    }
+  } finally {
+    cp.execFileSync("git", ["worktree", "prune"], { cwd: repo, stdio: "ignore" });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("the Python extension's selected interpreter, through every shape it comes in", async () => {
+  const uri = (fsPath: string) => ({ fsPath });
+  const api = (over: Record<string, unknown> = {}) => ({
+    getActiveEnvironmentPath: () => ({ path: "/envs/x" }),
+    resolveEnvironment: async () => ({ executable: { uri: uri("/envs/x/bin/python") } }),
+    ...over,
+  });
+
+  // The normal case: the resolved executable wins over the environment path.
+  assert.equal(await selectedFromPythonApi(api(), undefined), "/envs/x/bin/python");
+
+  // Degraded shapes must all mean "no selection", never a thrown command.
+  const degraded: Array<[string, unknown]> = [
+    ["no api at all", undefined],
+    ["empty api", {}],
+    ["no environment selected", api({ getActiveEnvironmentPath: () => undefined })],
+    ["resolveEnvironment missing", { getActiveEnvironmentPath: () => ({ path: "/envs/x" }) }],
+    ["getActiveEnvironmentPath throws", api({ getActiveEnvironmentPath: () => { throw new Error("boom"); } })],
+    ["resolveEnvironment rejects", api({ resolveEnvironment: async () => { throw new Error("boom"); } })],
+  ];
+  for (const [name, environments] of degraded) {
+    const got = await selectedFromPythonApi(environments as never, undefined);
+    assert.equal(got, name === "resolveEnvironment missing" ? "/envs/x" : undefined, name);
+  }
+
+  // Resolvable but with no executable: fall back to the environment path itself.
+  for (const partial of [{}, { executable: {} }, { executable: { uri: {} } }]) {
+    assert.equal(
+      await selectedFromPythonApi(api({ resolveEnvironment: async () => partial }) as never, undefined),
+      "/envs/x",
+      JSON.stringify(partial),
+    );
+  }
+
+  // And it feeds chooseInterpreters, which decides whether --python is passed at all.
+  const selected = await selectedFromPythonApi(api(), undefined);
+  assert.deepEqual(chooseInterpreters({ repoDefinesPython: false, selected, fallback: "python3" }),
+    { launcher: "/envs/x/bin/python", project: "/envs/x/bin/python" });
+  assert.deepEqual(chooseInterpreters({ repoDefinesPython: true, selected, fallback: "python3" }),
+    { launcher: "/envs/x/bin/python" });
 });

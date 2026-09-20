@@ -313,6 +313,35 @@ function renderDiff(d: MemblameResult): string {
   );
 }
 
+function renderRun(d: MemblameResult): string {
+  const result = d.result;
+  const head = `<h1>Memory measurement</h1><p>${commitLabel(d.commit)}</p>`;
+  if (!result?.valid) {
+    return `${head}<p class="big bad">Measurement unavailable.</p>`;
+  }
+  const rows = Object.entries(result.units ?? {})
+    .map(([name, u]) => {
+      const spread = u.peak.max - u.peak.min;
+      const top = (u.top ?? [])
+        .filter((f) => f.self > 0)
+        .slice(0, 3)
+        .map((f) => `<div class="sub">${mb(f.self)} ${link("", 1, f.id)}</div>`)
+        .join("");
+      return (
+        `<tr><td>${esc(name)}${top}</td><td class="num">${mb(u.peak.median)}</td>` +
+        `<td class="num">${mb(spread)}</td><td class="num">${mb(u.end.median)}</td>` +
+        `<td>${esc(u.outcome)}</td></tr>`
+      );
+    })
+    .join("");
+  return (
+    `${head}<p class="muted">${result.runs} run(s) per commit.</p>` +
+    `<table class="fns"><thead><tr><th>unit</th><th class="num">peak</th>` +
+    `<th class="num">spread</th><th class="num">retained</th><th>outcome</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>`
+  );
+}
+
 function renderBisect(d: MemblameResult): string {
   if (d.status !== "found") {
     return `<h1>Bisect</h1><p class="big">${esc(d.message)}</p>`;
@@ -340,6 +369,9 @@ export function renderBody(d: MemblameResult): string {
   const meta = `<p class="muted">workload <code>${esc(d.workload)}</code> · ${esc(shownPy)}</p>`;
   let body: string;
   switch (d.kind) {
+    case "run":
+      body = renderRun(d);
+      break;
     case "range":
       body = renderRange(d);
       break;

@@ -5,12 +5,14 @@ from __future__ import annotations
 import html
 import json
 import secrets
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from .report import mb
 
 
-def render(data: dict, kind: str) -> str:
+def render(data: Mapping[str, Any], kind: str) -> str:
     """Render a schema-1 result as Markdown or a standalone HTML document."""
     if kind in ("md", "markdown"):
         return markdown(data)
@@ -44,7 +46,7 @@ def _commit(c: dict | None) -> str:
     return f"{_code(name)} {_md(c.get('subject', ''))}".strip()
 
 
-def _metadata_md(data: dict) -> list[str]:
+def _metadata_md(data: Mapping[str, Any]) -> list[str]:
     return [
         f"- **Workload:** {_code(data.get('workload', ''))}",
         f"- **Repository:** {_code(data.get('repo', ''))}",
@@ -52,7 +54,7 @@ def _metadata_md(data: dict) -> list[str]:
     ]
 
 
-def _warnings_md(data: dict) -> list[str]:
+def _warnings_md(data: Mapping[str, Any]) -> list[str]:
     warnings = data.get("warnings", [])
     notes = data.get("notes", [])
     if not warnings and not notes:
@@ -63,7 +65,7 @@ def _warnings_md(data: dict) -> list[str]:
     return out
 
 
-def _incomplete_text(data: dict) -> str | None:
+def _incomplete_text(data: Mapping[str, Any]) -> str | None:
     """One sentence for both formats; None when the measurement is complete."""
     status = data.get("measurement_status", "complete")
     if status == "complete":
@@ -79,7 +81,7 @@ def _incomplete_text(data: dict) -> str | None:
     return f"{detail}; no memory-regression conclusion can be made."
 
 
-def _incomplete_md(data: dict) -> list[str]:
+def _incomplete_md(data: Mapping[str, Any]) -> list[str]:
     text = _incomplete_text(data)
     return [] if text is None else ["", f"**{text}**"]
 
@@ -136,9 +138,9 @@ def _finding_md(finding: dict, commit: dict | None = None) -> list[str]:
     return out
 
 
-def markdown(data: dict) -> str:
+def markdown(data: Mapping[str, Any]) -> str:
     """A GitHub-flavoured Markdown summary suitable for GITHUB_STEP_SUMMARY."""
-    kind = data.get("kind")
+    kind: str = data.get("kind", "")
     title = {
         "run": "Memory measurement",
         "diff": "Memory comparison",
@@ -161,7 +163,7 @@ def markdown(data: dict) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _run_md(data: dict) -> list[str]:
+def _run_md(data: Mapping[str, Any]) -> list[str]:
     result = data.get("result", {})
     out = ["", f"## {_commit(data.get('commit'))}", *_incomplete_md(data)]
     if not result.get("valid", False):
@@ -175,7 +177,7 @@ def _run_md(data: dict) -> list[str]:
     return out
 
 
-def _diff_md(data: dict) -> list[str]:
+def _diff_md(data: Mapping[str, Any]) -> list[str]:
     out = ["", f"## {_commit(data.get('base'))} → {_commit(data.get('head'))}"]
     findings = data.get("findings", [])
     if data.get("measurement_status", "complete") != "complete":
@@ -207,7 +209,7 @@ def _diff_md(data: dict) -> list[str]:
     return out
 
 
-def _range_md(data: dict) -> list[str]:
+def _range_md(data: Mapping[str, Any]) -> list[str]:
     points = data.get("points", [])
     findings = data.get("findings", [])
     commits = {p.get("commit", {}).get("sha"): p.get("commit") for p in points}
@@ -236,7 +238,7 @@ def _range_md(data: dict) -> list[str]:
     return out
 
 
-def _bisect_md(data: dict) -> list[str]:
+def _bisect_md(data: Mapping[str, Any]) -> list[str]:
     if data.get("status") != "found":
         return ["", f"**{_md(data.get('message', 'Bisect did not find a regression.'))}**"]
     out = [
@@ -264,7 +266,7 @@ def _h(text: object) -> str:
     return html.escape(str(text), quote=True)
 
 
-def _status_html(data: dict) -> str:
+def _status_html(data: Mapping[str, Any]) -> str:
     text = _incomplete_text(data)
     return "" if text is None else f'<p class="status bad">{_h(text)}</p>'
 
@@ -420,7 +422,7 @@ def _range_chart(points: list[dict], unit: str, findings: list[dict]) -> str:
             f'<span class="key flagged"></span> Significant change</p>')
 
 
-def _html_body(data: dict) -> str:
+def _html_body(data: Mapping[str, Any]) -> str:
     kind = data.get("kind")
     if kind == "run":
         return _run_html(data)
@@ -433,7 +435,7 @@ def _html_body(data: dict) -> str:
     return f'<pre>{_h(json.dumps(data, indent=2))}</pre>'
 
 
-def _run_html(data: dict) -> str:
+def _run_html(data: Mapping[str, Any]) -> str:
     result = data.get("result", {})
     if not result.get("valid", False):
         return f'<h1>Memory measurement</h1><p>{_commit_html(data.get("commit"))}</p>' \
@@ -450,7 +452,7 @@ def _run_html(data: dict) -> str:
                      ["", "num", "num", "num", ""]))
 
 
-def _diff_html(data: dict) -> str:
+def _diff_html(data: Mapping[str, Any]) -> str:
     findings = data.get("findings", [])
     if data.get("measurement_status", "complete") != "complete":
         status = _status_html(data)
@@ -483,7 +485,7 @@ def _diff_html(data: dict) -> str:
                      ["", "", "num", "num", "num", ""]))
 
 
-def _range_html(data: dict) -> str:
+def _range_html(data: Mapping[str, Any]) -> str:
     points = data.get("points", [])
     findings = data.get("findings", [])
     commits = {p.get("commit", {}).get("sha"): p.get("commit") for p in points}
@@ -522,7 +524,7 @@ def _range_html(data: dict) -> str:
                      ["", "", "num", "num", ""]))
 
 
-def _bisect_html(data: dict) -> str:
+def _bisect_html(data: Mapping[str, Any]) -> str:
     if data.get("status") != "found":
         return (f'<h1>Memory regression bisect</h1><p class="status">'
                 f'{_h(data.get("message", "No regression found."))}</p>')
@@ -614,7 +616,7 @@ if (select) select.addEventListener('change', () => {
 """
 
 
-def html_report(data: dict) -> str:
+def html_report(data: Mapping[str, Any]) -> str:
     """A dependency-free HTML report with interactive range charts."""
     nonce = secrets.token_urlsafe(18)
     warnings = "".join(f'<div class="warn">⚠ {_h(w)}</div>' for w in data.get("warnings", []))

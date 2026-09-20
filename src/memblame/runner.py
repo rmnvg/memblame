@@ -32,6 +32,15 @@ import os
 import sys
 import time
 
+# Types only. `import typing` would itself break the rule above (a bare interpreter has not
+# loaded it), and `from __future__ import annotations` means none of these are evaluated at
+# runtime, so this block stays empty outside a type checker.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    import threading
+    from collections.abc import Sequence
+    from typing import Any
+
 SCHEMA = 1
 HINT_FRACTION = 0.9  # start snapshotting once memory reaches 90% of the known peak
 SNAPSHOT_STEP = 1.02  # ...then only on a new high 2% above the last snapshot (~6 snapshots)
@@ -53,10 +62,6 @@ def scopes_from_source(source: str) -> list[tuple[int, int, int, str]]:
     """
     import ast
 
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return []
     out: list[tuple[int, int, int, str]] = []
 
     def visit(node, prefix: str) -> None:
@@ -70,7 +75,14 @@ def scopes_from_source(source: str) -> list[tuple[int, int, int, str]]:
             else:
                 visit(child, prefix)
 
-    visit(tree, "")
+    try:
+        # Both steps, not just the parse: generated code (a chain of thousands of `+`, say)
+        # nests deeper than the recursion limit, and which of the two gives out first
+        # depends on the Python version. Like a syntax error this means "no scopes in this
+        # file", never a reason to abort an analysis that has already measured its commits.
+        visit(ast.parse(source), "")
+    except (SyntaxError, ValueError, RecursionError):
+        return []
     out.sort()
     return out
 
@@ -151,7 +163,7 @@ class Attributor:
         self._frame_cache[key] = result
         return result
 
-    def summarize(self, traces: list, reference_bytes: int) -> dict:
+    def summarize(self, traces: Sequence[Any], reference_bytes: int) -> dict:
         """Aggregate a snapshot into per-function self/cumulative bytes and top lines."""
         from collections import defaultdict
 
@@ -179,7 +191,7 @@ class Attributor:
                 unattributed += size
                 if total_nframe is not None and total_nframe > len(frames):
                     truncated += size
-        functions = [
+        functions: list[dict[str, Any]] = [
             {"id": fid, "self": self_bytes.get(fid, 0), "cumulative": cum}
             for fid, cum in cum_bytes.items()
             if cum >= MIN_FUNC_BYTES
@@ -196,7 +208,7 @@ class Attributor:
         }
 
 
-def _grouped_traces(traces: list):
+def _grouped_traces(traces: Sequence[Any]):
     """Yield (frames most-recent-first, total size, total_nframe) per distinct traceback.
 
     `traces` is the raw list from `_tracemalloc._get_traces()` (what `take_snapshot()` wraps):
@@ -229,15 +241,16 @@ class Meter:
         self.nframe = nframe
         self.attribute = attribute
         self.peak_mode = peak_mode
-        self._poller = None
-        self._stop_poll = None
+        self._poller: threading.Thread | None = None
+        self._stop_poll: threading.Event | None = None
+        self._switch = 0.0  # the interpreter switch interval to restore after polling
         self.attr = attributor
         self.hints = hints
         self.units: list[dict] = []
         self._name = ""
         self._t0 = 0.0
         self._best = 0
-        self._snapshot: list | None = None  # raw traces at (near) the peak
+        self._snapshot: Sequence[Any] | None = None  # raw traces at (near) the peak
         self._threshold = 0
 
     def _check(self) -> None:
@@ -250,8 +263,8 @@ class Meter:
         if event == "return" or event == "c_return":
             self._check()
 
-    def _poll(self) -> None:
-        while not self._stop_poll.wait(POLL_INTERVAL):
+    def _poll(self, stop: threading.Event) -> None:
+        while not stop.wait(POLL_INTERVAL):
             self._check()
 
     def start(self, name: str) -> None:
@@ -272,7 +285,8 @@ class Meter:
                 self._stop_poll = threading.Event()
                 self._switch = sys.getswitchinterval()
                 sys.setswitchinterval(POLL_INTERVAL)  # let the poller get the GIL often
-                self._poller = threading.Thread(target=self._poll, daemon=True)
+                self._poller = threading.Thread(target=self._poll, args=(self._stop_poll,),
+                                                daemon=True)
                 self._poller.start()
         self._t0 = time.perf_counter()
 
@@ -281,7 +295,7 @@ class Meter:
         sys.setprofile(None)
         if "threading" in sys.modules:
             sys.modules["threading"].setprofile(None)
-        if self._poller is not None:
+        if self._poller is not None and self._stop_poll is not None:
             self._stop_poll.set()
             self._poller.join()
             self._poller = None
@@ -405,7 +419,8 @@ def _run_script(argv: list[str], meter: Meter) -> None:
             code = compile(fh.read(), path, "exec")
         main = type(sys)("__main__")
         main.__file__ = path
-        main.__builtins__ = __builtins__
+        # __builtins__ is a CPython implementation detail, absent from typeshed's module type.
+        main.__builtins__ = __builtins__  # type: ignore[attr-defined]
         saved = sys.modules.get("__main__")
         sys.modules["__main__"] = main  # pickle/multiprocessing look things up here
         try:
@@ -475,7 +490,9 @@ def pytest_extra_args() -> list[str]:
 
         eps = entry_points()
         # Python 3.9 returns a dict and has no group= keyword; 3.10+ has .select()
-        group = eps.select(group="pytest11") if hasattr(eps, "select") else eps.get("pytest11", [])
+        # The .get branch is the 3.9 shape (a plain dict); typeshed only models the modern one.
+        group = (eps.select(group="pytest11") if hasattr(eps, "select")
+                 else eps.get("pytest11", []))  # type: ignore[attr-defined]
         plugins = {ep.name for ep in group}
     except Exception:  # noqa: BLE001 - metadata problems must not stop the measurement
         plugins = set()
