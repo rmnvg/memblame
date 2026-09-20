@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from memblame import api, artifact, cli, measure, report
+from memblame.contract import validate_output
 
 sys.path.insert(0, str(Path(__file__).parent))
 from fixture_repo import make_repo  # noqa: E402
@@ -71,7 +72,7 @@ def test_bisect_command_text_found_and_no_regression(planted, capsys):
                            planted.commits["docs2"], "--metric", "peak", "--threshold", "+10MB",
                            "-C", str(planted.path), "-w", planted.workload, *PY)
     assert code == 3
-    assert "First bad commit" in out and "include raw payload in rows" in out
+    assert "Threshold crossing" in out and "include raw payload in rows" in out
     code, out, _ = run_cli(capsys, "bisect", "--good", planted.commits["initial"], "--bad",
                            planted.commits["docstring"], "-C", str(planted.path),
                            "-w", planted.workload, *PY)
@@ -138,7 +139,7 @@ def _report_unit(peak, retained):
            "bad": False},
           {"commit": _report_commit("bbbbbbb", "after"), "value": 2_000_000,
            "bad": True},
-      ]}, "First bad commit"),
+      ]}, "Threshold crossing"),
 ])
 def test_portable_report_renderers_cover_every_command(data, needle):
     markdown = artifact.markdown(data)
@@ -150,6 +151,17 @@ def test_portable_report_renderers_cover_every_command(data, needle):
     assert "<unsafe>" not in markdown
     if data["kind"] == "range":
         assert "<svg" in rendered_html and "line peak" in rendered_html
+
+
+def test_public_result_contract_rejects_schema_and_status_breaks():
+    good = {**_report_header("diff"), "measurement_status": "complete",
+            "base": _report_commit("aaaaaaa", "before"),
+            "head": _report_commit("bbbbbbb", "after")}
+    assert validate_output(good)["kind"] == "diff"
+    with pytest.raises(ValueError, match="schema"):
+        validate_output({**good, "schema": 2})
+    with pytest.raises(ValueError, match="measurement_status"):
+        validate_output({**good, "measurement_status": "maybe"})
 
 
 def test_cli_writes_markdown_and_html_reports(planted, tmp_path, capsys):
@@ -226,6 +238,22 @@ def test_config_types_are_checked(tmp_path, capsys):
     r.commit({"pyproject.toml": '[tool.memblame]\nworkload = "call:a:b"\nruns = "3"\n'}, "v1")
     code, _, err = run_cli(capsys, "diff", "-C", str(r.path))
     assert code == 1 and "config key 'runs' must be int" in err
+
+
+def test_cache_inputs_are_read_from_config_and_cli(tmp_path):
+    args = cli.build_parser().parse_args([
+        "run", "-w", "script:bench.py", "--cache-env", "SIZE",
+        "--cache-input", "../data.json",
+    ])
+    settings = cli.settings_from(args, {}, tmp_path)
+    assert settings.cache_env == ["SIZE"]
+    assert settings.cache_inputs == ["../data.json"]
+
+    args = cli.build_parser().parse_args(["run", "-w", "script:bench.py"])
+    settings = cli.settings_from(args, {"cache_env": "SIZE", "cache_inputs": ["data/"]},
+                                 tmp_path)
+    assert settings.cache_env == ["SIZE"]
+    assert settings.cache_inputs == ["data/"]
 
 
 def test_config_without_toml_parser_is_not_silently_ignored(tmp_path, capsys, monkeypatch):
@@ -308,7 +336,10 @@ def test_workload_that_kills_the_process_is_skipped(tmp_path):
     assert [p["valid"] for p in out["points"]] == [True, False, True]
     assert any("runner crashed (exit 3)" in w for w in out["warnings"])
     text = report.format_range(out)
-    assert "No significant memory changes." in text and "SKIPPED" in text
+    # An unmeasurable commit is an incomplete measurement: never a "no changes" all-clear.
+    assert out["measurement_status"] == "error"
+    assert "no memory-regression conclusion" in text and "SKIPPED" in text
+    assert "No significant memory changes." not in text
 
 
 def test_attribution_failure_keeps_the_numbers(tmp_path):

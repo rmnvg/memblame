@@ -63,6 +63,27 @@ def _warnings_md(data: dict) -> list[str]:
     return out
 
 
+def _incomplete_text(data: dict) -> str | None:
+    """One sentence for both formats; None when the measurement is complete."""
+    status = data.get("measurement_status", "complete")
+    if status == "complete":
+        return None
+    if data.get("kind") == "range" and data.get("findings"):
+        n = data.get("incomplete_commits", 0)
+        which = f"{n} commit(s)" if n else "some commits"
+        return (f"Measurement incomplete: {which} could not be measured or did not pass. The "
+                "findings below are between commits that were measured; more may hide in the "
+                "gaps, so this is not an all-clear.")
+    detail = ("Measurement unavailable" if status == "error"
+              else "Measurement incomplete because one or more workloads did not pass")
+    return f"{detail}; no memory-regression conclusion can be made."
+
+
+def _incomplete_md(data: dict) -> list[str]:
+    text = _incomplete_text(data)
+    return [] if text is None else ["", f"**{text}**"]
+
+
 def _verdict_md(verdict: dict) -> list[str]:
     kind = verdict.get("kind", "none")
     if kind == "none":
@@ -142,7 +163,7 @@ def markdown(data: dict) -> str:
 
 def _run_md(data: dict) -> list[str]:
     result = data.get("result", {})
-    out = ["", f"## {_commit(data.get('commit'))}"]
+    out = ["", f"## {_commit(data.get('commit'))}", *_incomplete_md(data)]
     if not result.get("valid", False):
         return out + ["", "**Measurement unavailable.**"]
     out += ["", "| Unit | Peak | Spread | Retained | Outcome |",
@@ -157,6 +178,8 @@ def _run_md(data: dict) -> list[str]:
 def _diff_md(data: dict) -> list[str]:
     out = ["", f"## {_commit(data.get('base'))} → {_commit(data.get('head'))}"]
     findings = data.get("findings", [])
+    if data.get("measurement_status", "complete") != "complete":
+        return out + _incomplete_md(data)
     if data.get("valid") is False:
         return out + ["", "**Comparison unavailable.**"]
     if any(f.get("delta", 0) > 0 for f in findings):
@@ -189,8 +212,10 @@ def _range_md(data: dict) -> list[str]:
     findings = data.get("findings", [])
     commits = {p.get("commit", {}).get("sha"): p.get("commit") for p in points}
     out = ["", f"**Measured {data.get('measured', len(points))} of {len(points)} commits "
-           f"in {data.get('mode', 'unknown')} mode.**"]
-    if findings:
+           f"in {data.get('mode', 'unknown')} mode.**", *_incomplete_md(data)]
+    if data.get("measurement_status", "complete") != "complete" and not findings:
+        out += ["", "## Findings", "", "No conclusion because the measurement is incomplete."]
+    elif findings:
         out += ["", f"## Findings ({len(findings)})"]
         for finding in findings:
             out += _finding_md(finding, commits.get(finding.get("commit")))
@@ -216,12 +241,14 @@ def _bisect_md(data: dict) -> list[str]:
         return ["", f"**{_md(data.get('message', 'Bisect did not find a regression.'))}**"]
     out = [
         "",
-        "## First bad commit",
+        "## " + ("First verified crossing" if data.get("verified") else
+                  "Threshold crossing (monotonicity assumed)"),
         "",
         f"**{_commit(data.get('culprit'))}**",
         "",
         f"{_code(data.get('unit', ''))} {data.get('metric', '')} crossed "
         f"{mb(data.get('threshold', 0))} after {data.get('steps', 0)} bisect steps.",
+        *_incomplete_md(data),
     ]
     for finding in data.get("findings", []):
         out += _finding_md(finding, data.get("culprit"))
@@ -235,6 +262,11 @@ def _bisect_md(data: dict) -> list[str]:
 
 def _h(text: object) -> str:
     return html.escape(str(text), quote=True)
+
+
+def _status_html(data: dict) -> str:
+    text = _incomplete_text(data)
+    return "" if text is None else f'<p class="status bad">{_h(text)}</p>'
 
 
 def _commit_html(c: dict | None) -> str:
@@ -411,14 +443,18 @@ def _run_html(data: dict) -> str:
         rows.append([f'<code>{_h(name)}</code>', _h(mb(unit["peak"]["median"])),
                      _h(mb(spread)), _h(mb(unit["end"]["median"])),
                      _h(unit["outcome"])])
-    return (f'<h1>Memory measurement</h1><p>{_commit_html(data.get("commit"))}</p>'
+    status = _status_html(data)
+    return (f'<h1>Memory measurement</h1><p>{_commit_html(data.get("commit"))}</p>{status}'
             + _table(["Unit", "Peak", "Spread", "Retained", "Outcome"], rows,
                      ["", "num", "num", "num", ""]))
 
 
 def _diff_html(data: dict) -> str:
     findings = data.get("findings", [])
-    if data.get("valid") is False:
+    if data.get("measurement_status", "complete") != "complete":
+        status = _status_html(data)
+        findings = []
+    elif data.get("valid") is False:
         status = '<p class="status bad">Comparison unavailable.</p>'
     elif any(f.get("delta", 0) > 0 for f in findings):
         status = '<p class="status bad">Memory regression detected.</p>'
@@ -461,7 +497,9 @@ def _range_html(data: dict) -> str:
         for index, unit in enumerate(units)
     )
     cards = "".join(_finding_html(f, commits.get(f.get("commit"))) for f in findings)
-    if not cards:
+    if data.get("measurement_status", "complete") != "complete":
+        cards = _status_html(data) + cards
+    elif not cards:
         cards = '<p class="status good">No significant memory changes.</p>'
     rows = []
     for point in points:
@@ -494,7 +532,8 @@ def _bisect_html(data: dict) -> str:
         state = "skipped" if item.get("skipped") else "bad" if item.get("bad") else "good"
         value = "—" if item.get("value") is None else _h(mb(item["value"]))
         rows.append([state, _commit_html(item.get("commit")), value])
-    return (f'<h1>First bad commit</h1><p class="culprit">'
+    title = "First verified crossing" if data.get("verified") else "Threshold crossing"
+    return (f'<h1>{title}</h1>{_status_html(data)}<p class="culprit">'
             f'{_commit_html(data.get("culprit"))}</p><p class="lede">'
             f'<code>{_h(data.get("unit", ""))}</code> {_h(data.get("metric", ""))} crossed '
             f'{_h(mb(data.get("threshold", 0)))} after {data.get("steps", 0)} steps.</p>'

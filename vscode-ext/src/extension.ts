@@ -2,13 +2,27 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { buildArgs, runMemblame } from "./cli";
+import { buildArgs, chooseInterpreters, InterpreterChoice, runMemblame } from "./cli";
+import { Finding, MemblameResult } from "./contract";
 import { mb, renderHtml } from "./render";
-import { findTests, isTestFile, locateScope, pytestWorkload, suggestWorkloads, tomlDefinesWorkload } from "./workload";
+import { findTests, isTestFile, locateScope, pytestWorkload, suggestWorkloads, tomlDefinesKey } from "./workload";
+
+interface PythonExtensionApi {
+  environments?: {
+    getActiveEnvironmentPath?(resource: vscode.Uri): { path: string } | undefined;
+    resolveEnvironment(path: { path: string }): Promise<{
+      executable?: { uri?: vscode.Uri };
+    } | undefined>;
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 let panel: vscode.WebviewPanel | undefined;
 let state: vscode.ExtensionContext | undefined;
-let lastResult: any;
+let lastResult: MemblameResult | undefined;
 let running: { cancel: () => void } | undefined;
 const annotations = new Map<string, { line: number; qualname: string; title: string; hover: string }[]>(); // abs file -> lenses
 const hotLines = new Map<string, { line: number; text: string }[]>();
@@ -35,14 +49,15 @@ function canon(p: string): string {
 
 /** Returned from activate(); used by the integration tests. */
 export interface MemBlameApi {
-  lastResult(): any;
+  lastResult(): MemblameResult | undefined;
   reportHtml(): string | undefined;
 }
 
 export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
   state = ctx;
   const bundled = path.join(ctx.extensionPath, "python");
-  const cmd = (id: string, fn: (...a: any[]) => any) => ctx.subscriptions.push(vscode.commands.registerCommand(id, fn));
+  const cmd = (id: string, fn: (...args: never[]) => unknown) =>
+    ctx.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
   cmd("memblame.compareWorkingTree", async (arg?: string | { file: string; test: string }) => {
     let workload = typeof arg === "string" ? arg : undefined;
@@ -137,28 +152,23 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
     if (!repo) {
       return;
     }
-    let workload = workloadArg;
-    if (!workload) {
-      const cfgWorkload = vscode.workspace.getConfiguration("memblame").get<string>("workload");
-      workload = cfgWorkload || state?.workspaceState.get<string>("workload");
-    }
-    const fromRepoConfig = !workload && (await repositoryDefinesWorkload(repo));
+    let workload = workloadArg ?? explicitSetting<string>("workload");
+    const fromRepoConfig = !workload && (await repositoryDefinesKey(repo, "workload"));
     if (!workload && !fromRepoConfig) {
-      workload = await chooseWorkload(false);
+      workload = state?.workspaceState.get<string>("workload") ?? await chooseWorkload(false);
     }
     if (!workload && !fromRepoConfig) {
       return;
     }
-    const cfg = vscode.workspace.getConfiguration("memblame");
-    const python = await resolvePython(repo);
+    const { launcher, project } = await resolvePython(repo);
     const full = [
       ...args,
       ...buildArgs({
         workload,
-        runs: cfg.get<number>("runs"),
-        nframe: cfg.get<number>("nframe"),
-        importPaths: cfg.get<string[]>("importPaths"),
-        python,
+        runs: explicitSetting<number>("runs"),
+        nframe: explicitSetting<number>("nframe"),
+        importPaths: explicitSetting<string[]>("importPaths"),
+        python: project,
         repo,
       }),
     ];
@@ -167,7 +177,7 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
       async (progress, token) => {
         let last = 0;
         const job = runMemblame({
-          python,
+          python: launcher,
           repo,
           args: full,
           bundledPath,
@@ -189,9 +199,9 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
           await applyAnnotations(result);
           showReport(ctx, result);
           summarize(result);
-        } catch (err: any) {
-          if (err?.message !== "cancelled") {
-            vscode.window.showErrorMessage(`MemBlame: ${err?.message ?? err}`);
+        } catch (err: unknown) {
+          if (errorMessage(err) !== "cancelled") {
+            vscode.window.showErrorMessage(`MemBlame: ${errorMessage(err)}`);
           }
         } finally {
           running = undefined;
@@ -203,15 +213,15 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
   return api;
 }
 
-async function repositoryDefinesWorkload(repo: string): Promise<boolean> {
+async function repositoryDefinesKey(repo: string, key: string): Promise<boolean> {
   for (const [name, pyproject] of [["memblame.toml", false], ["pyproject.toml", true]] as const) {
     try {
       const contents = await fs.promises.readFile(path.join(repo, name), "utf8");
-      if (tomlDefinesWorkload(contents, pyproject)) {
+      if (tomlDefinesKey(contents, pyproject, key)) {
         return true;
       }
-    } catch (err: any) {
-      if (err?.code !== "ENOENT") {
+    } catch (err: unknown) {
+      if (!(err instanceof Error && "code" in err && err.code === "ENOENT")) {
         throw err;
       }
     }
@@ -280,32 +290,41 @@ async function pickCommit(repo: string, title: string, allowWorktree = false): P
   return pick?.rev;
 }
 
-async function resolvePython(repo: string): Promise<string> {
-  const configured = vscode.workspace.getConfiguration("memblame").get<string>("pythonPath");
-  if (configured) {
-    return configured;
-  }
+function explicitSetting<T>(key: string): T | undefined {
+  const setting = vscode.workspace.getConfiguration("memblame").inspect<T>(key);
+  return setting?.workspaceFolderValue ?? setting?.workspaceValue ?? setting?.globalValue;
+}
+
+async function resolvePython(repo: string): Promise<InterpreterChoice> {
+  return chooseInterpreters({
+    explicit: explicitSetting<string>("pythonPath"),
+    repoDefinesPython: await repositoryDefinesKey(repo, "python"),
+    selected: await selectedInterpreter(repo),
+    fallback: process.platform === "win32" ? "python" : "python3",
+  });
+}
+
+async function selectedInterpreter(repo: string): Promise<string | undefined> {
   const ext = vscode.extensions.getExtension("ms-python.python");
-  if (ext) {
-    try {
-      const api: any = ext.isActive ? ext.exports : await ext.activate();
-      const envPath = api?.environments?.getActiveEnvironmentPath?.(vscode.Uri.file(repo));
-      if (envPath) {
-        const env = await api.environments.resolveEnvironment(envPath);
-        const exe = env?.executable?.uri?.fsPath ?? envPath.path;
-        if (exe) {
-          return exe;
-        }
-      }
-    } catch {
-      // fall through to defaults
-    }
+  if (!ext) {
+    return undefined;
   }
-  return process.platform === "win32" ? "python" : "python3";
+  try {
+    const api = (ext.isActive ? ext.exports : await ext.activate()) as PythonExtensionApi;
+    const environments = api?.environments;
+    const envPath = environments?.getActiveEnvironmentPath?.(vscode.Uri.file(repo));
+    if (environments && envPath) {
+      const env = await environments.resolveEnvironment(envPath);
+      return env?.executable?.uri?.fsPath ?? envPath.path;
+    }
+  } catch {
+    // no usable selection: fall through to the CLI's own discovery
+  }
+  return undefined;
 }
 
 async function chooseWorkload(force: boolean): Promise<string | undefined> {
-  const configured = vscode.workspace.getConfiguration("memblame").get<string>("workload");
+  const configured = explicitSetting<string>("workload");
   const current = configured || state?.workspaceState.get<string>("workload");
   if (current && !force) {
     return current;
@@ -340,7 +359,7 @@ async function chooseWorkload(force: boolean): Promise<string | undefined> {
   return workload;
 }
 
-function showReport(ctx: vscode.ExtensionContext, result: any) {
+function showReport(ctx: vscode.ExtensionContext, result: MemblameResult) {
   if (!panel) {
     panel = vscode.window.createWebviewPanel("memblame.report", "MemBlame", vscode.ViewColumn.Beside, {
       enableScripts: true,
@@ -370,10 +389,17 @@ async function openLocation(file: string, line: number) {
   }
 }
 
-function summarize(result: any) {
-  const ups = (result.findings ?? []).filter((f: any) => f.delta > 0);
-  if (result.kind === "bisect" && result.status === "found") {
-    vscode.window.showInformationMessage(`MemBlame: first bad commit ${result.culprit.short} "${result.culprit.subject}"`);
+function summarize(result: MemblameResult) {
+  const ups = (result.findings ?? []).filter((f) => f.delta > 0);
+  if (result.measurement_status && result.measurement_status !== "complete") {
+    const w = (result.warnings ?? []).find((x: string) => /INVALID|SKIPPED|failed/i.test(x)) ?? "see report";
+    vscode.window.showErrorMessage(`MemBlame: measurement ${result.measurement_status}. ${w}`);
+  } else if (result.kind === "bisect" && result.status === "found") {
+    const label = result.verified ? "first verified crossing" : "threshold crossing";
+    const culprit = result.culprit;
+    vscode.window.showInformationMessage(
+      `MemBlame: ${label} ${culprit?.short ?? "unknown"} "${culprit?.subject ?? ""}"`,
+    );
   } else if (ups.length) {
     const f = ups[0];
     const where = f.verdict?.qualname ? ` in ${f.verdict.qualname}()` : "";
@@ -397,12 +423,12 @@ async function isDirty(repo: string): Promise<boolean> {
   return (await gitOut(repo, ["status", "--porcelain", "--untracked-files=no"])) !== "";
 }
 
-async function applyAnnotations(result: any) {
+async function applyAnnotations(result: MemblameResult) {
   annotations.clear();
   hotLines.clear();
   const repo: string = result.repo ?? "";
   const head = await gitOut(repo, ["rev-parse", "HEAD"]);
-  const findings: any[] = result.findings ?? [];
+  const findings: Finding[] = result.findings ?? [];
   for (const f of findings) {
     const v = f.verdict;
     if (!v?.file) {
@@ -412,7 +438,8 @@ async function applyAnnotations(result: any) {
     const since = f.commit ? ` at ${String(f.commit).slice(0, 7)}` : result.kind === "diff" ? ` vs ${result.base?.short ?? "base"}` : "";
     const title = `$(${f.delta > 0 ? "arrow-up" : "arrow-down"}) ${f.metric} memory ${mb(f.delta, true)}${since} · ${v.kind} · ${f.unit}`;
     const list = annotations.get(abs) ?? [];
-    list.push({ line: v.line, qualname: v.qualname, title, hover: `MemBlame: ${v.function}` });
+    list.push({ line: v.line ?? 1, qualname: v.qualname ?? "<module>", title,
+      hover: `MemBlame: ${v.function ?? "unknown"}` });
     annotations.set(abs, list);
     // Line numbers are from the measured commit; only annotate lines if that is what's on disk.
     const lineCommit = f.commit ?? (result.kind === "diff" ? result.head?.sha : result.culprit?.sha);

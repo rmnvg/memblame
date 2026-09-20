@@ -6,20 +6,26 @@ export interface WorkloadSuggestion {
   detail: string;
 }
 
-/** Whether a TOML file defines the repository workload in MemBlame's supported table. */
-export function tomlDefinesWorkload(text: string, pyproject: boolean): boolean {
+/** Whether a TOML file defines `key` in MemBlame's supported table. */
+export function tomlDefinesKey(text: string, pyproject: boolean, key: string): boolean {
   let inTable = !pyproject;
+  const assignment = new RegExp(`^\\s*(?:${key}|"${key}"|'${key}')\\s*=`);
   for (const line of text.split(/\r?\n/)) {
     const header = /^\s*\[\s*([^\]]+)\s*\]/.exec(line);
     if (header) {
       inTable = pyproject && header[1].trim() === "tool.memblame";
       continue;
     }
-    if (inTable && /^\s*(?:workload|"workload"|'workload')\s*=/.test(line)) {
+    if (inTable && assignment.test(line)) {
       return true;
     }
   }
   return false;
+}
+
+/** Whether a TOML file defines the repository workload in MemBlame's supported table. */
+export function tomlDefinesWorkload(text: string, pyproject: boolean): boolean {
+  return tomlDefinesKey(text, pyproject, "workload");
 }
 
 /** One argument for the engine's workload parser, including spaces and literal quotes. */

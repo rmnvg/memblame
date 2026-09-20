@@ -76,6 +76,8 @@ inside the workload, e.g. `-w "script:'bench scripts/run.py'"`.
 | `--nframe N` | `16` | traceback depth for attribution; raise it if a verdict notes truncated stacks |
 | `--timeout S` | `900` | seconds per run; a commit that takes longer is skipped |
 | `--no-cache` | | ignore and don't write `.memblame/cache/` |
+| `--cache-env NAME` | | invalidate cached measurements when this environment variable changes; repeatable |
+| `--cache-input PATH` | | invalidate cached measurements when this file or directory changes; repeatable |
 | `--json` | | machine-readable output (`"schema": 1`), used by the VS Code extension |
 | `--report md\|html` | | portable Markdown or self-contained interactive HTML report |
 | `-o, --output PATH` | stdout | write terminal, JSON or report output to a file; parent directories are created |
@@ -83,6 +85,7 @@ inside the workload, e.g. `-w "script:'bench scripts/run.py'"`.
 | `bisect --good REV` / `--bad REV` | `--bad HEAD` | the range to search |
 | `bisect --threshold` | noise band | `200MB` (absolute), `+20MB` or `+10%` (relative to good) |
 | `bisect --unit NAME` / `--metric peak\|retained` | the one that grew most | what to track, e.g. a pytest node id |
+| `bisect --verify` | | measure every candidate and return the earliest observed threshold crossing |
 
 Exit codes: `0` a completed check with no significant increase, `3` a significant memory
 increase was found (handy in CI), `1` error or incomplete measurement, `2` not a git repository.
@@ -125,7 +128,14 @@ pythonpath = ["src"]
 python = ".venv/bin/python"
 timeout = 600
 threshold = "+10%"   # default for bisect
+cache_env = ["DATASET_VERSION"]
+cache_inputs = ["../bench-data/input.json"]
 ```
+
+Committed files, the interpreter, installed packages and memblame's measurement engine are
+included in cache keys automatically. If a workload depends on inherited environment variables
+or files outside the selected commit, declare them with `cache_env` / `cache_inputs` (or the
+matching command-line flags); undeclared external inputs cannot invalidate an existing cache.
 
 Reading config needs Python 3.11+ (or `pip install tomli` on 3.9/3.10); otherwise memblame
 says so and uses the command line only.
@@ -137,6 +147,8 @@ says so and uses the command line only.
    create or modify files; memblame disables Python bytecode writes while running workloads.
    Every workload runs in a fresh subprocess of **your project's interpreter**.
 2. Fast runs measure **peak** and **retained** (still allocated after the run) traced memory.
+   Returned values and script globals are released before retained memory is sampled, so the
+   metric represents caches, module state and other objects that outlive workload output.
    They repeat until two runs agree, and the median is reported. `tracemalloc` counts
    are nearly deterministic: on real projects run-to-run noise was a few KB.
 3. A change counts only if it exceeds the noise band: `max(2 × spread, 2 % of peak, 64 KiB)`.
@@ -172,8 +184,17 @@ says so and uses the command line only.
   adds `-n 0` (pytest-xdist), `-p no:randomly` and `--no-cov` (pytest-cov) when those
   plugins are installed.
 * A commit where the workload fails, skips, or cannot be measured (crash, timeout) makes the
-  check incomplete, never a successful memory check. `bisect` can skip broken intermediate
+  check incomplete (exit code 1), never a successful memory check. A `range` still lists the
+  findings between commits that *were* measured and passed, under an "incomplete" banner: more
+  may hide in the gaps, so it is not an all-clear. Two failing runs are never compared. `bisect` can skip broken intermediate
   commits the way `git bisect skip` does, but its endpoints must pass.
+* Each run gets its own process group and a closed stdin. On a timeout, or when you cancel
+  from the editor or with Ctrl-C, the whole process tree the workload started is terminated,
+  and background processes a finished run left behind are removed (POSIX). A process that
+  deliberately detaches into a new session (`setsid`) is not tracked, and Windows cannot
+  identify the children of an already-finished process.
+* Fast `bisect` assumes the metric crosses its threshold once; use `bisect --verify` when the
+  earliest crossing must be established on a potentially nonmonotonic history.
 * Adaptive `range` can miss a change that is exactly undone later within one unsplit
   segment. Use `--all` to measure every commit.
 * Attribution names where memory was **allocated**. For "kept alive too long" problems it

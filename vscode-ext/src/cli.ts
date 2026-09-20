@@ -1,6 +1,7 @@
 // Run the bundled memblame engine and parse its JSON. No vscode imports (unit-testable).
 import * as cp from "child_process";
 import * as path from "path";
+import { MemblameResult, parseEngineResponse } from "./contract";
 
 export interface Progress {
   message: string;
@@ -16,7 +17,7 @@ export interface RunRequest {
 }
 
 export interface Running {
-  result: Promise<any>;
+  result: Promise<MemblameResult>;
   cancel: () => void;
 }
 
@@ -30,19 +31,55 @@ export function parseProgress(line: string): Progress | undefined {
   return m ? { message: m[3], step: [Number(m[1]), Number(m[2])] } : { message: text };
 }
 
+export interface InterpreterChoice {
+  /** Runs the bundled memblame engine (needs Python 3.9+). */
+  launcher: string;
+  /** Passed as --python: the interpreter that runs *your* code. Undefined = let the CLI decide. */
+  project?: string;
+}
+
+/**
+ * Interpreter precedence, highest first:
+ *   1. the explicit `memblame.pythonPath` setting
+ *   2. `python` in the repository's memblame.toml / [tool.memblame]  (the CLI applies it)
+ *   3. the interpreter selected in the Python extension
+ *   4. the CLI's auto-discovery: active venv/conda env, then .venv or venv in the repository
+ *   5. python3 / python
+ * The CLI's own --python flag beats repository config, so --python is only passed when
+ * nothing in the repository should win (case 1 and 3).
+ */
+export function chooseInterpreters(input: {
+  explicit?: string;
+  repoDefinesPython: boolean;
+  selected?: string;
+  fallback: string;
+}): InterpreterChoice {
+  if (input.explicit) {
+    return { launcher: input.explicit, project: input.explicit };
+  }
+  const launcher = input.selected ?? input.fallback;
+  if (input.repoDefinesPython || !input.selected) {
+    return { launcher };
+  }
+  return { launcher, project: input.selected };
+}
+
 export function buildArgs(common: {
   workload?: string;
   runs?: number;
   nframe?: number;
   importPaths?: string[];
-  python: string;
+  python?: string;
   repo: string;
 }): string[] {
   const args = ["-C", common.repo];
   if (common.workload) {
     args.push("-w", common.workload);
   }
-  args.push("--python", common.python, "--json");
+  if (common.python) {
+    args.push("--python", common.python);
+  }
+  args.push("--json");
   if (common.runs) {
     args.push("--runs", String(common.runs));
   }
@@ -78,7 +115,7 @@ export function runMemblame(req: RunRequest): Running {
       }
     }
   });
-  const result = new Promise<any>((resolve, reject) => {
+  const result = new Promise<MemblameResult>((resolve, reject) => {
     child.on("error", (err) =>
       reject(new Error(`could not start ${req.python}: ${err.message}. Set memblame.pythonPath or select an interpreter.`)),
     );
@@ -87,12 +124,13 @@ export function runMemblame(req: RunRequest): Running {
         reject(new Error("cancelled"));
         return;
       }
-      let parsed: any;
+      let parsed;
       try {
-        parsed = JSON.parse(stdout);
-      } catch {
+        parsed = parseEngineResponse(JSON.parse(stdout) as unknown);
+      } catch (err: unknown) {
         const tail = stderr.split(/\r?\n/).filter(Boolean).slice(-8).join("\n");
-        reject(new Error(`memblame exited with code ${code}:\n${tail || stdout.slice(-2000)}`));
+        const detail = err instanceof Error ? err.message : String(err);
+        reject(new Error(`memblame exited with code ${code}: ${detail}\n${tail || stdout.slice(-2000)}`));
         return;
       }
       if (parsed.kind === "error") {
@@ -109,7 +147,11 @@ export function runMemblame(req: RunRequest): Running {
     result,
     cancel: () => {
       cancelled = true;
-      child.kill("SIGTERM"); // the CLI turns SIGTERM into a clean exit (worktree removal)
+      if (process.platform === "win32" && child.pid) {
+        cp.spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+      } else {
+        child.kill("SIGTERM"); // the CLI cleans its runner process group and worktree
+      }
     },
   };
 }

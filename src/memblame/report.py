@@ -44,12 +44,23 @@ def _warnings(d: dict) -> list[str]:
     return [f"warning: {w}" for w in d.get("warnings", [])]
 
 
+def _status_line(d: dict) -> str | None:
+    status = d.get("measurement_status", "complete")
+    if status == "complete":
+        return None
+    return ("ERROR: measurement unavailable; no memory-regression conclusion"
+            if status == "error"
+            else "INCOMPLETE: one or more workloads did not pass; no regression conclusion")
+
+
 def format_run(d: dict) -> str:
     c, r = d["commit"], d["result"]
     if not r["valid"]:
         return "\n".join([f"{c['short']}  {c['subject']}   (measurement unavailable)",
                           *_warnings(d)])
     out = [f"{c['short']}  {c['subject']}   (python {r['python']}, {r['runs']} runs)"]
+    if line := _status_line(d):
+        out.append(line)
     out.append(f"  {'unit':44} {'peak':>10} {'spread':>9} {'retained':>10}  outcome")
     for name, u in r["units"].items():
         spread = u["peak"]["max"] - u["peak"]["min"]
@@ -68,6 +79,8 @@ def format_diff(d: dict) -> str:
     out = [f"{a['short']} -> {b['short']}   {b['subject']}"]
     if not d["valid"]:
         return "\n".join(out + _warnings(d))
+    if line := _status_line(d):
+        out.append(line)
     out += [f"  note: {n}" for n in d.get("notes", [])]
     if not d["units"]:
         out.append("  no units were measured (see warnings)")
@@ -141,8 +154,21 @@ def format_range(d: dict) -> str:
         out.append("")
     if len(units) > len(interesting[:3]):
         out.append(f"({len(units) - len(interesting[:3])} other units without findings)")
-    out += _findings(d["findings"], points)
+    if d.get("measurement_status", "complete") == "complete":
+        out += _findings(d["findings"], points)
+    elif d["findings"]:
+        out.append(f"INCOMPLETE: {_incomplete_note(d)}")
+        out += _findings(d["findings"], points)
+    else:
+        out.append("Measurement incomplete; no memory-regression conclusion.")
     return "\n".join(out + _warnings(d))
+
+
+def _incomplete_note(d: dict) -> str:
+    n = d.get("incomplete_commits", 0)
+    which = f"{n} commit(s)" if n else "some commits"
+    return (f"{which} could not be measured or did not pass. The findings below are between "
+            "commits that were measured; more may hide in the gaps, so this is not an all-clear.")
 
 
 def _findings(findings: list[dict], points: list[dict]) -> list[str]:
@@ -162,9 +188,12 @@ def format_bisect(d: dict) -> str:
     if d["status"] != "found":
         return "\n".join([f"bisect: {d['message']}"] + _warnings(d))
     c = d["culprit"]
-    out = [f"First bad commit: {c['short']}  {c['author']}  \"{c['subject']}\"",
+    label = "First verified crossing" if d.get("verified") else "Threshold crossing"
+    out = [f"{label}: {c['short']}  {c['author']}  \"{c['subject']}\"",
            f"  {d['unit']} {d['metric']} threshold {mb(d['threshold'])}; "
            f"{d['steps']} bisect steps for {d['candidates']} candidate commits"]
+    if line := _status_line(d):
+        out.append(line)
     for t in d["measurements"]:
         mark = "skip" if t.get("skipped") else "bad " if t["bad"] else "good"
         value = "-" if t["value"] is None else mb(t["value"])

@@ -6,10 +6,13 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
+import signal
 import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -40,6 +43,8 @@ class Settings:
     python: str | None = None
     timeout: float = 900.0
     extra_env: dict[str, str] = field(default_factory=dict)
+    cache_env: list[str] = field(default_factory=list)
+    cache_inputs: list[str] = field(default_factory=list)
 
     def fingerprint(self) -> dict:
         d = asdict(self)
@@ -99,8 +104,9 @@ def environment_fingerprint(python: str) -> str:
 
 def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | None,
               attribute: bool, peak_mode: str = "poll", hint_fraction: float = 0.9) -> dict:
-    with tempfile.TemporaryDirectory(prefix="mb-run-") as tmp:
-        spec_path, out_path = Path(tmp, "spec.json"), Path(tmp, "out.json")
+    tmp = Path(tempfile.mkdtemp(prefix="mb-run-"))
+    try:
+        spec_path, out_path = tmp / "spec.json", tmp / "out.json"
         kind, _, target = s.workload.partition(":")
         spec = {
             "workload": s.workload,
@@ -117,21 +123,14 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
         spec_path.write_text(repr(spec), encoding="utf-8")  # read by eval: see runner.read_spec
         env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
                **s.extra_env}
-        try:
-            proc = subprocess.run(
-                [python, str(RUNNER), str(spec_path)], cwd=root, env=env,
-                capture_output=True, text=True, errors="replace", timeout=s.timeout,
-            )
-        except subprocess.TimeoutExpired:
-            raise MeasureError(f"workload timed out after {s.timeout:.0f}s") from None
-        except OSError as exc:
-            raise MeasureError(f"cannot run project interpreter {python}: "
-                               f"{exc.strerror or exc}") from None
+        returncode, stdout, stderr = _launch(python, spec_path, root, env, tmp, s.timeout)
         if not out_path.exists():
-            tail = (proc.stderr or proc.stdout)[-3000:]
-            raise MeasureError(f"runner crashed (exit {proc.returncode}):\n{tail}")
+            tail = (stderr or stdout)[-3000:]
+            raise MeasureError(f"runner crashed (exit {returncode}):\n{tail}")
         result = json.loads(out_path.read_text())
-    result["output_tail"] = ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)  # a lingering child may still hold a log open
+    result["output_tail"] = (stdout + stderr)[-1500:]
     if "setup_error" in result:
         raise SetupError(result["setup_error"])
     if "fatal" in result:
@@ -139,6 +138,92 @@ def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | N
     if result.get("schema") != SCHEMA:
         raise MeasureError("runner schema mismatch")
     return result
+
+
+LOG_TAIL_BYTES = 8192
+
+
+def _launch(python: str, spec_path: Path, root: Path, env: dict, tmp: Path,
+            timeout: float) -> tuple[int, str, str]:
+    """Run the runner in its own process group and wait for *it* (not for pipe EOF).
+
+    Output goes to files: a workload can print without ever blocking on a full pipe, and a
+    descendant that outlives the runner (or escapes its process group) cannot keep us
+    waiting for an end-of-file that never comes. stdin is closed, so a workload that calls
+    input() fails fast instead of waiting on the user's terminal.
+    """
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    out_log, err_log = tmp / "stdout.log", tmp / "stderr.log"
+    proc = None
+    try:
+        with open(out_log, "wb") as out_fh, open(err_log, "wb") as err_fh:
+            proc = subprocess.Popen(
+                [python, str(RUNNER), str(spec_path)], cwd=root, env=env,
+                stdin=subprocess.DEVNULL, stdout=out_fh, stderr=err_fh,
+                start_new_session=os.name != "nt", creationflags=creationflags,
+            )
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _terminate_process_tree(proc)
+                raise MeasureError(f"workload timed out after {timeout:.0f}s") from None
+    except OSError as exc:
+        raise MeasureError(f"cannot run project interpreter {python}: "
+                           f"{exc.strerror or exc}") from None
+    except BaseException:  # Ctrl-C / SIGTERM from the editor: leave nothing running
+        if proc is not None:
+            _terminate_process_tree(proc)
+        raise
+    _terminate_process_tree(proc, leftovers_only=True)  # background processes it left behind
+    return proc.returncode, _log_tail(out_log), _log_tail(err_log)
+
+
+def _log_tail(path: Path) -> str:
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - LOG_TAIL_BYTES))
+            return fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _terminate_process_tree(proc: subprocess.Popen, leftovers_only: bool = False) -> None:
+    """Best-effort termination of a runner and every process it launched.
+
+    With `leftovers_only` the runner has already exited normally; only processes still in
+    its process group (background children of the workload) are removed. On Windows a
+    finished parent no longer identifies its children, so nothing can be done then.
+    """
+    if os.name == "nt":
+        if leftovers_only:
+            return
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True, check=False)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return
+    if not leftovers_only:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    # The group leader may exit before a stubborn descendant. Kill the group once more.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    if not leftovers_only:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def split_args(text: str) -> list[str]:
@@ -375,6 +460,46 @@ def external_script_hash(repo: Path, workload: str) -> str:
         return "missing"
 
 
+def workload_inputs_hash(repo: Path, settings: Settings) -> str:
+    """Hash user-declared inputs that are not represented by a commit SHA.
+
+    The effective value of each declared environment variable is included without writing
+    the value to disk. Files may be absolute or relative to the repository; directories are
+    hashed recursively so generated datasets can be declared as one input.
+    """
+    h = hashlib.sha256()
+    env = {**os.environ, **settings.extra_env}
+    for name in sorted(set(settings.cache_env)):
+        h.update(b"env\0")
+        h.update(name.encode("utf-8", errors="surrogateescape"))
+        h.update(b"\0")
+        value = env.get(name)
+        h.update(b"missing" if value is None else value.encode("utf-8", errors="surrogateescape"))
+        h.update(b"\0")
+
+    for declared in sorted(set(settings.cache_inputs)):
+        path = Path(declared).expanduser()
+        if not path.is_absolute():
+            path = repo / path
+        h.update(b"path\0")
+        h.update(declared.encode("utf-8", errors="surrogateescape"))
+        h.update(b"\0")
+        try:
+            if path.is_dir():
+                files = sorted(p for p in path.rglob("*") if p.is_file())
+                for child in files:
+                    h.update(child.relative_to(path).as_posix().encode("utf-8"))
+                    h.update(b"\0")
+                    h.update(child.read_bytes())
+                    h.update(b"\0")
+            else:
+                h.update(path.read_bytes())
+        except OSError as exc:
+            h.update(f"unreadable:{type(exc).__name__}:{getattr(exc, 'errno', None)}".encode())
+        h.update(b"\0")
+    return h.hexdigest()[:20]
+
+
 class Cache:
     """Measurements keyed by commit + everything that could change the numbers."""
 
@@ -385,7 +510,8 @@ class Cache:
         if enabled:
             self._salt = json.dumps(
                 [settings.fingerprint(), environment_fingerprint(python), engine_hash(), SCHEMA,
-                 external_script_hash(repo, settings.workload)],
+                 external_script_hash(repo, settings.workload),
+                 workload_inputs_hash(repo, settings)],
                 sort_keys=True,
             )
 
@@ -403,12 +529,43 @@ class Cache:
             return None
 
     def put(self, sha: str, result: dict) -> None:
+        """Best-effort atomic write: a cache problem must never lose a finished measurement."""
         if not self.enabled or sha == "WORKTREE":
             return
-        self.dir.mkdir(parents=True, exist_ok=True)
-        gitignore = self.dir.parent / ".gitignore"
-        if not gitignore.exists():
-            gitignore.write_text("*\n")
-        tmp = self._path(sha).with_suffix(".tmp")
-        tmp.write_text(json.dumps(result))
-        os.replace(tmp, self._path(sha))
+        tmp: Path | None = None
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            gitignore = self.dir.parent / ".gitignore"
+            if not gitignore.exists():
+                gitignore.write_text("*\n")
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.dir,
+                prefix=f".{sha[:12]}-", suffix=".tmp", delete=False,
+            ) as fh:
+                json.dump(result, fh)
+                tmp = Path(fh.name)
+            _replace_with_retry(tmp, self._path(sha))
+        except OSError:
+            pass  # read-only checkout, full disk, or a concurrent writer won the race
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+def _replace_with_retry(source: Path, target: Path, attempts: int = 20) -> None:
+    """os.replace, tolerating Windows' "access denied" while another writer swaps the same file.
+
+    After the last attempt the target is still busy: the other writer stored an entry for the
+    same key, so giving up is correct.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == attempts - 1:
+                raise
+            time.sleep(0.01 * (attempt + 1))

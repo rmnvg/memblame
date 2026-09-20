@@ -2,13 +2,17 @@
 
 import copy
 import json
+import os
 import shlex
+import shutil
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from test_edge_cases import Repo, session
 
-from memblame import api, cli, measure
+from memblame import api, artifact, cli, measure, report
 
 
 def test_absolute_repo_script_tracks_revision_and_preserves_arguments(tmp_path):
@@ -66,6 +70,20 @@ def test_python_exception_is_not_a_successful_check(tmp_path, capsys, command):
     out = json.loads(capsys.readouterr().out)
     assert code == 1
     assert any("broken workload" in warning for warning in out["warnings"])
+
+
+def test_failed_diff_reports_are_explicitly_incomplete(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.commit({"bench.py": "x = 1\n"}, "good")
+    repo.commit({"bench.py": "raise ValueError('broken workload')\n"}, "broken")
+    with session(repo, "script:bench.py") as s:
+        out = api.diff(s, "HEAD~1", "HEAD")
+
+    assert out["measurement_status"] == "incomplete"
+    for rendered in (report.format_diff(out), artifact.markdown(out),
+                     artifact.html_report(out)):
+        assert "incomplete" in rendered.lower()
+        assert "no significant memory change" not in rendered.lower()
 
 
 @pytest.mark.parametrize("command", ["run", "diff", "range", "bisect"])
@@ -156,9 +174,64 @@ def test_no_collected_tests_are_a_failed_measurement(tmp_path, monkeypatch):
         measure.measure(sys.executable, tmp_path, measure.Settings("pytest:tests", runs=1))
 
 
+def test_concurrent_cache_writers_use_independent_atomic_temp_files(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    sha = repo.commit({"bench.py": "x = 1\n"}, "initial")
+    settings = measure.Settings("script:bench.py", runs=1)
+    cache = measure.Cache(repo.path, sys.executable, settings)
+    writers = 12
+    barrier = threading.Barrier(writers)
+
+    def write(index: int) -> None:
+        barrier.wait()
+        cache.put(sha, {"schema": 1, "writer": index, "payload": "x" * 100_000})
+
+    with ThreadPoolExecutor(max_workers=writers) as pool:
+        list(pool.map(write, range(writers)))
+    stored = cache.get(sha)
+    assert stored is not None and stored["writer"] in range(writers)
+    assert not list(cache.dir.glob("*.tmp"))
+
+
 @pytest.mark.parametrize("windows", [False, True])
 def test_quoted_workload_arguments_round_trip(monkeypatch, windows):
     monkeypatch.setattr(measure.os, "name", "nt" if windows else "posix")
     args = ["bench scripts/it's a benchmark.py", 'tests/test_a.py::test_it[a "quote"]',
             r"C:\my dir\run.py", "", "a#b"]
     assert measure.split_args(" ".join(shlex.quote(s) for s in args)) == args
+
+
+def test_cache_write_failures_never_fail_a_finished_measurement(tmp_path, monkeypatch):
+    repo = Repo(tmp_path / "repo")
+    sha = repo.commit({"bench.py": "x = 1\n"}, "initial")
+    cache = measure.Cache(repo.path, sys.executable, measure.Settings("script:bench.py", runs=1))
+
+    def denied(*_a, **_k):
+        raise PermissionError("target is busy")
+
+    monkeypatch.setattr(measure.os, "replace", denied)
+    monkeypatch.setattr(measure.time, "sleep", lambda _s: None)
+    cache.put(sha, {"schema": 1})  # must not raise
+    assert cache.get(sha) is None and not list(cache.dir.glob("*.tmp"))
+    monkeypatch.undo()
+    shutil.rmtree(repo.path / ".memblame", ignore_errors=True)
+    (repo.path / ".memblame").write_text("a file where the cache directory should be")
+    cache.put(sha, {"schema": 1})  # mkdir fails: still must not raise
+
+
+def test_replace_retries_windows_access_denied(tmp_path, monkeypatch):
+    calls = []
+    real = os.replace
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 4:
+            raise PermissionError("busy")
+        real(src, dst)
+
+    monkeypatch.setattr(measure.os, "name", "nt")
+    monkeypatch.setattr(measure.os, "replace", flaky)
+    monkeypatch.setattr(measure.time, "sleep", lambda _s: None)
+    (tmp_path / "a").write_text("new")
+    measure._replace_with_retry(tmp_path / "a", tmp_path / "b")
+    assert len(calls) == 4 and (tmp_path / "b").read_text() == "new"

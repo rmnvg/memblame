@@ -56,6 +56,8 @@ export async function run(): Promise<void> {
     const f = r.findings.find((x: any) => x.metric === "peak");
     assert.ok(f && f.delta > 0, JSON.stringify(r.findings));
     assert.equal(f.verdict.function, "shop/parse.py::load_rows");
+    assert.equal(r.settings.runs, 1);
+    assert.equal(r.settings.nframe, 7);
     assert.match(api.reportHtml() ?? "", /Memory went up/);
   });
 
