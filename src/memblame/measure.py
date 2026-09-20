@@ -12,6 +12,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -528,21 +529,43 @@ class Cache:
             return None
 
     def put(self, sha: str, result: dict) -> None:
+        """Best-effort atomic write: a cache problem must never lose a finished measurement."""
         if not self.enabled or sha == "WORKTREE":
             return
-        self.dir.mkdir(parents=True, exist_ok=True)
-        gitignore = self.dir.parent / ".gitignore"
-        if not gitignore.exists():
-            gitignore.write_text("*\n")
         tmp: Path | None = None
         try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            gitignore = self.dir.parent / ".gitignore"
+            if not gitignore.exists():
+                gitignore.write_text("*\n")
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", dir=self.dir,
                 prefix=f".{sha[:12]}-", suffix=".tmp", delete=False,
             ) as fh:
                 json.dump(result, fh)
                 tmp = Path(fh.name)
-            os.replace(tmp, self._path(sha))
+            _replace_with_retry(tmp, self._path(sha))
+        except OSError:
+            pass  # read-only checkout, full disk, or a concurrent writer won the race
         finally:
             if tmp is not None:
-                tmp.unlink(missing_ok=True)
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+def _replace_with_retry(source: Path, target: Path, attempts: int = 20) -> None:
+    """os.replace, tolerating Windows' "access denied" while another writer swaps the same file.
+
+    After the last attempt the target is still busy: the other writer stored an entry for the
+    same key, so giving up is correct.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == attempts - 1:
+                raise
+            time.sleep(0.01 * (attempt + 1))

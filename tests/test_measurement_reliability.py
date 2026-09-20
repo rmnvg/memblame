@@ -2,7 +2,9 @@
 
 import copy
 import json
+import os
 import shlex
+import shutil
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -197,3 +199,39 @@ def test_quoted_workload_arguments_round_trip(monkeypatch, windows):
     args = ["bench scripts/it's a benchmark.py", 'tests/test_a.py::test_it[a "quote"]',
             r"C:\my dir\run.py", "", "a#b"]
     assert measure.split_args(" ".join(shlex.quote(s) for s in args)) == args
+
+
+def test_cache_write_failures_never_fail_a_finished_measurement(tmp_path, monkeypatch):
+    repo = Repo(tmp_path / "repo")
+    sha = repo.commit({"bench.py": "x = 1\n"}, "initial")
+    cache = measure.Cache(repo.path, sys.executable, measure.Settings("script:bench.py", runs=1))
+
+    def denied(*_a, **_k):
+        raise PermissionError("target is busy")
+
+    monkeypatch.setattr(measure.os, "replace", denied)
+    monkeypatch.setattr(measure.time, "sleep", lambda _s: None)
+    cache.put(sha, {"schema": 1})  # must not raise
+    assert cache.get(sha) is None and not list(cache.dir.glob("*.tmp"))
+    monkeypatch.undo()
+    shutil.rmtree(repo.path / ".memblame", ignore_errors=True)
+    (repo.path / ".memblame").write_text("a file where the cache directory should be")
+    cache.put(sha, {"schema": 1})  # mkdir fails: still must not raise
+
+
+def test_replace_retries_windows_access_denied(tmp_path, monkeypatch):
+    calls = []
+    real = os.replace
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 4:
+            raise PermissionError("busy")
+        real(src, dst)
+
+    monkeypatch.setattr(measure.os, "name", "nt")
+    monkeypatch.setattr(measure.os, "replace", flaky)
+    monkeypatch.setattr(measure.time, "sleep", lambda _s: None)
+    (tmp_path / "a").write_text("new")
+    measure._replace_with_retry(tmp_path / "a", tmp_path / "b")
+    assert len(calls) == 4 and (tmp_path / "b").read_text() == "new"
