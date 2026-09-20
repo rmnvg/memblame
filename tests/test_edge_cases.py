@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -511,3 +512,37 @@ def test_diff_paths_survive_git_quoting_and_prefix_config(tmp_path, noprefix):
     hunks = git.diff_hunks(repo.path, "HEAD~1", "HEAD")
     assert {h.file for h in hunks} == set(names)
     assert {h.old_file for h in hunks} == set(names)
+
+
+def test_unreadable_untracked_python_file_does_not_abort_the_diff(tmp_path):
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "v1")
+    try:
+        os.symlink(tmp_path / "does-not-exist.py", r.path / "broken.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+    (r.path / "pkg" / "new.py").write_text("x = 1\ny = 2\n")
+    hunks = git.diff_hunks(r.path, "HEAD", git.WORKTREE)
+    assert [h.file for h in hunks] == ["pkg/new.py"]  # the dangling link is skipped, not fatal
+
+
+def test_adaptive_range_progress_is_not_numbered_against_the_whole_range(tmp_path):
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "v1")
+    r.commit({"pkg/a.py": SMALL + "# note\n"}, "v2")
+    r.commit({"pkg/a.py": SMALL + "# more\n"}, "v3")
+    r.commit({"pkg/a.py": BIG}, "v4")
+    shas = r.git("rev-list", "--reverse", "HEAD").split()
+
+    def messages(exhaustive: bool) -> list[str]:
+        seen: list[str] = []
+        settings = Settings(workload="call:pkg.a:run", runs=1, python=sys.executable)
+        with api.Session(r.path, settings, use_cache=False, progress=seen.append) as s:
+            api.range_(s, shas[0], shas[-1], exhaustive=exhaustive)
+        return [m for m in seen if "measuring" in m]
+
+    adaptive = messages(exhaustive=False)
+    assert adaptive and not any(re.match(r"\[\d+/\d+\]", m) for m in adaptive)
+    assert adaptive[0].startswith("commit 1: ")
+    exhaustive = messages(exhaustive=True)  # its total is known, so the numbering stays
+    assert [m.split()[0] for m in exhaustive] == ["[1/4]", "[2/4]", "[3/4]", "[4/4]"]

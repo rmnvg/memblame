@@ -290,3 +290,9 @@ def test_extension_version_matches_package():
     if not manifest.exists():  # the sdist ships tests but not the extension
         pytest.skip("vscode-ext/package.json not present")
     assert json.loads(manifest.read_text(encoding="utf-8"))["version"] == memblame.__version__
+
+
+def test_package_ships_the_py_typed_marker():
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "src" / "memblame" / "py.typed").is_file()
+    assert "py.typed" in (root / "pyproject.toml").read_text()

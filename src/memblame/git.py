@@ -288,7 +288,10 @@ def diff_hunks(repo: Path, base: str, head: str) -> list[Hunk]:
     if head == WORKTREE:  # untracked files count as entirely new
         untracked = git(repo, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.py")
         for rel in filter(None, untracked.split("\0")):
-            n = len((repo / rel).read_text(encoding="utf-8", errors="replace").splitlines())
+            try:
+                n = len((repo / rel).read_text(encoding="utf-8", errors="replace").splitlines())
+            except OSError:
+                continue  # dangling symlink or unreadable file: it cannot be in the workload
             hunks.append(Hunk(rel, 0, 0, 1, max(n, 1)))
     return hunks
 

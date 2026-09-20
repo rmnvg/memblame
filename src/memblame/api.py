@@ -180,7 +180,12 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
 
     def get(i: int) -> tuple[git.Commit, dict]:
         if i not in measured:
-            measured[i] = session.result(shas[i], f"[{len(measured) + 1}/{n}] ")
+            # Only an exhaustive run knows its total up front. An adaptive one measures about
+            # log2(N) commits plus attribution runs, so "[k/N]" would stall the progress bar
+            # part-way; an unnumbered label keeps it indeterminate instead.
+            label = (f"[{len(measured) + 1}/{n}] " if exhaustive
+                     else f"commit {len(measured) + 1}: ")
+            measured[i] = session.result(shas[i], label)
         return measured[i]
 
     if exhaustive:

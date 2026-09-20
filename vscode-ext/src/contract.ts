@@ -66,11 +66,18 @@ export interface Finding {
   parent?: string;
 }
 
+/** A function's share of one measurement (not a delta between two). */
+export interface TopFunction {
+  id: string;
+  self: number;
+  cumulative: number;
+}
+
 export interface UnitResult {
   outcome: string;
   peak: Stats;
   end: Stats;
-  top?: FunctionDelta[];
+  top?: TopFunction[];
 }
 
 export interface ComparisonMetric {

@@ -141,6 +141,7 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
   ctx.subscriptions.push(
     vscode.languages.registerCodeLensProvider({ language: "python" }, new LensProvider()),
     vscode.window.onDidChangeVisibleTextEditors(refreshDecorations),
+    hotDecoration,
     { dispose: () => running?.cancel() },
   );
 

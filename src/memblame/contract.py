@@ -44,6 +44,18 @@ class FindingJSON(TypedDict, total=False):
     parent: str
 
 
+class ErrorResult(TypedDict):
+    """What `--json` prints when a command fails before producing a result."""
+
+    schema: Literal[1]
+    kind: Literal["error"]
+    error: str
+
+
+def error_output(message: str) -> ErrorResult:
+    return {"schema": 1, "kind": "error", "error": message}
+
+
 class PublicResult(TypedDict, total=False):
     schema: int
     kind: ResultKind

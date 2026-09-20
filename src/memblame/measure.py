@@ -93,10 +93,11 @@ def environment_fingerprint(python: str) -> str:
         "print(json.dumps([sys.version, d]))"
     )
     try:
-        proc = subprocess.run([python, "-c", code], capture_output=True, text=True)
-    except OSError as exc:
-        raise MeasureError(f"cannot run project interpreter {python}: {exc.strerror or exc}. "
-                           "Pass --python with your project's interpreter.") from None
+        proc = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MeasureError(f"cannot run project interpreter {python}: "
+                           f"{getattr(exc, 'strerror', None) or exc}. Pass --python with your "
+                           "project's interpreter.") from None
     if proc.returncode != 0:
         raise MeasureError(f"cannot run project interpreter {python}: {proc.stderr.strip()}")
     return hashlib.sha256(proc.stdout.encode()).hexdigest()[:16]
