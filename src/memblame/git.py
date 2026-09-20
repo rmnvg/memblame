@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import os
 import re
@@ -250,10 +251,10 @@ def parse_hunks(diff_text: str) -> list[Hunk]:
     old = ""
     for line in diff_text.splitlines():
         if line.startswith("--- "):
-            source = line[4:].strip()
+            source = _diff_path(line[4:])
             old = "" if source == "/dev/null" else source.removeprefix("a/")
         elif line.startswith("+++ "):
-            target = line[4:].strip()
+            target = _diff_path(line[4:])
             current = old if target == "/dev/null" else target.removeprefix("b/")
         elif line.startswith("@@") and current is not None:
             m = _HUNK_RE.match(line)
@@ -266,9 +267,21 @@ def parse_hunks(diff_text: str) -> list[Hunk]:
     return hunks
 
 
+def _diff_path(header: str) -> str:
+    """Decode Git's C-quoted paths, including octal UTF-8 bytes and control characters."""
+    path = header.removesuffix("\t")
+    if path.startswith('"'):
+        # Git quotes backslashes and quotes using the same escapes as Python bytes.
+        # Non-ASCII text may remain literal with core.quotePath=false.
+        literal = path.encode("utf-8").decode("ascii", errors="backslashreplace")
+        return ast.literal_eval("b" + literal).decode("utf-8", errors="replace")
+    return path
+
+
 def diff_hunks(repo: Path, base: str, head: str) -> list[Hunk]:
     """Changed Python hunks between two revisions (`head` may be WORKTREE)."""
-    args = ["diff", "-U0", "--no-color", "--no-ext-diff", "-M", base]
+    args = ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv",
+            "--src-prefix=a/", "--dst-prefix=b/", "-M", base]
     if head != WORKTREE:
         args.append(head)
     hunks = parse_hunks(git(repo, *args, "--", "*.py"))
