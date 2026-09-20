@@ -124,6 +124,30 @@ def test_bisect_finds_planted_commit_in_log_steps(planted):
     assert out["findings"][0]["verdict"]["function"] == "shop/parse.py::load_rows"
 
 
+def test_public_result_declares_every_key_the_commands_emit(planted):
+    """CONTRIBUTING makes the JSON a public contract; PublicResult must not drift from it.
+
+    A field that ships without being declared is invisible to type checkers, which now read
+    the package because it carries py.typed.
+    """
+    from memblame.contract import PublicResult
+
+    declared = set(PublicResult.__annotations__)
+    direct, before = planted.commits["direct"], parent(planted, "direct")
+    with session(planted) as s:
+        results = [
+            api.run(s, direct),
+            api.diff(s, before, direct),
+            api.range_(s, before, direct),
+            api.bisect(s, planted.commits["initial"], planted.commits["docs2"],
+                       threshold="+10MB"),
+        ]
+    for out in results:
+        undeclared = sorted(set(out) - declared)
+        assert not undeclared, f"{out['kind']} emits undeclared key(s): {undeclared}"
+    assert {r["status"] for r in results if r["kind"] == "bisect"} == {"found"}
+
+
 def test_bisect_reports_no_regression_on_clean_history(clean):
     with session(clean) as s:
         out = api.bisect(s, clean.commits["initial"], clean.commits["changelog"])

@@ -93,10 +93,11 @@ def environment_fingerprint(python: str) -> str:
         "print(json.dumps([sys.version, d]))"
     )
     try:
-        proc = subprocess.run([python, "-c", code], capture_output=True, text=True)
-    except OSError as exc:
-        raise MeasureError(f"cannot run project interpreter {python}: {exc.strerror or exc}. "
-                           "Pass --python with your project's interpreter.") from None
+        proc = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MeasureError(f"cannot run project interpreter {python}: "
+                           f"{getattr(exc, 'strerror', None) or exc}. Pass --python with your "
+                           "project's interpreter.") from None
     if proc.returncode != 0:
         raise MeasureError(f"cannot run project interpreter {python}: {proc.stderr.strip()}")
     return hashlib.sha256(proc.stdout.encode()).hexdigest()[:16]
@@ -105,6 +106,12 @@ def environment_fingerprint(python: str) -> str:
 def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | None,
               attribute: bool, peak_mode: str = "poll", hint_fraction: float = 0.9) -> dict:
     tmp = Path(tempfile.mkdtemp(prefix="mb-run-"))
+    # Record the owner straight away: if this process is killed, the `finally` below never
+    # runs and git.remove_stale_worktrees reclaims the directory on a later run instead.
+    try:
+        (tmp / "pid").write_text(str(os.getpid()))
+    except OSError:
+        pass
     try:
         spec_path, out_path = tmp / "spec.json", tmp / "out.json"
         kind, _, target = s.workload.partition(":")

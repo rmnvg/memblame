@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -363,6 +365,52 @@ def test_stale_worktree_from_killed_run_is_removed(tmp_path):
         git.git(r.path, "worktree", "remove", "--force", str(live / "wt"), check=False)
 
 
+def test_orphaned_scratch_directories_are_reclaimed(tmp_path):
+    """A hard kill leaves directories `git worktree list` never mentions.
+
+    One killed before `git worktree add` finished, and every per-run scratch directory
+    (which holds the workload's uncapped stdout/stderr), are invisible to git, so without
+    this sweep they accumulate in the temp directory for ever.
+    """
+    def scratch(name, pid=None):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "stdout.log").write_text("x" * 100)
+        if pid is not None:
+            (d / "pid").write_text(str(pid))
+        return d
+
+    dead_setup = scratch(f"{git.WORKTREE_PREFIX}deadsetup", 999999)  # no such process
+    dead_run = scratch("mb-run-dead", 999999)
+    live_setup = scratch(f"{git.WORKTREE_PREFIX}live", os.getpid())
+    live_run = scratch("mb-run-live", os.getpid())
+    no_pid = scratch(f"{git.WORKTREE_PREFIX}nopid")  # older memblame, or still starting up
+    stranger = scratch("not-memblame", 999999)
+
+    removed = git._remove_orphan_scratch(tmp_path)
+
+    assert sorted(Path(r).name for r in removed) == ["mb-deadsetup", "mb-run-dead"]
+    assert not dead_setup.exists() and not dead_run.exists()
+    # A concurrent memblame, an older one and an unrelated directory are all left alone.
+    for kept in (live_setup, live_run, no_pid, stranger):
+        assert kept.exists(), kept
+
+
+def test_a_killed_run_leaves_no_scratch_behind_after_the_next_run(tmp_path):
+    """End to end: the next memblame reclaims what a killed one left in the temp directory."""
+    r = Repo(tmp_path / "repo")
+    r.commit({"a.py": SMALL}, "v1")
+    orphan = Path(tempfile.mkdtemp(prefix="mb-run-"))
+    (orphan / "pid").write_text("999999")
+    (orphan / "stdout.log").write_text("x" * 10_000)
+    try:
+        with session(r, "call:a:run") as s:
+            api.run(s, "HEAD")
+        assert not orphan.exists()
+    finally:
+        shutil.rmtree(orphan, ignore_errors=True)
+
+
 def test_runner_preloads_no_modules_the_workload_might_import(tmp_path):
     """Modules the runner imports before tracing are 'free' for the workload, which hides
     import-time memory (a real tomlkit commit added `import dataclasses` -> `inspect`)."""
@@ -511,3 +559,37 @@ def test_diff_paths_survive_git_quoting_and_prefix_config(tmp_path, noprefix):
     hunks = git.diff_hunks(repo.path, "HEAD~1", "HEAD")
     assert {h.file for h in hunks} == set(names)
     assert {h.old_file for h in hunks} == set(names)
+
+
+def test_unreadable_untracked_python_file_does_not_abort_the_diff(tmp_path):
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "v1")
+    try:
+        os.symlink(tmp_path / "does-not-exist.py", r.path / "broken.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+    (r.path / "pkg" / "new.py").write_text("x = 1\ny = 2\n")
+    hunks = git.diff_hunks(r.path, "HEAD", git.WORKTREE)
+    assert [h.file for h in hunks] == ["pkg/new.py"]  # the dangling link is skipped, not fatal
+
+
+def test_adaptive_range_progress_is_not_numbered_against_the_whole_range(tmp_path):
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "v1")
+    r.commit({"pkg/a.py": SMALL + "# note\n"}, "v2")
+    r.commit({"pkg/a.py": SMALL + "# more\n"}, "v3")
+    r.commit({"pkg/a.py": BIG}, "v4")
+    shas = r.git("rev-list", "--reverse", "HEAD").split()
+
+    def messages(exhaustive: bool) -> list[str]:
+        seen: list[str] = []
+        settings = Settings(workload="call:pkg.a:run", runs=1, python=sys.executable)
+        with api.Session(r.path, settings, use_cache=False, progress=seen.append) as s:
+            api.range_(s, shas[0], shas[-1], exhaustive=exhaustive)
+        return [m for m in seen if "measuring" in m]
+
+    adaptive = messages(exhaustive=False)
+    assert adaptive and not any(re.match(r"\[\d+/\d+\]", m) for m in adaptive)
+    assert adaptive[0].startswith("commit 1: ")
+    exhaustive = messages(exhaustive=True)  # its total is known, so the numbering stays
+    assert [m.split()[0] for m in exhaustive] == ["[1/4]", "[2/4]", "[3/4]", "[4/4]"]

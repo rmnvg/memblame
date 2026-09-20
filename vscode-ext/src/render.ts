@@ -257,7 +257,7 @@ function renderRange(d: MemblameResult): string {
     : incomplete
     ? `<h2>Findings</h2><p class="big bad">Measurement incomplete; no memory-regression conclusion.</p>`
     : findings.length
-    ? `<h2>Findings</h2>${findings.map((f) => findingCard(f, points[f.commit ? bySha.get(f.commit) ?? 0 : 0]?.commit)).join("")}`
+    ? `<h2>Findings</h2>${cards}`
     : `<h2>Findings</h2><p>No significant memory changes in this range.</p>`;
   return (
     `<h1>Memory over ${points.length} commits</h1>` +

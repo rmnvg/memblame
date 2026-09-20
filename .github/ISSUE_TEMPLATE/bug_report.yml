@@ -1,0 +1,36 @@
+name: Bug report
+description: memblame crashed, reported wrong numbers, or blamed the wrong function
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact `memblame ...` command, or the VS Code command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Full terminal output, or the JSON from `--json`. Redact anything private.
+      render: shell
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: memblame (`memblame --version`), Python, OS, and VS Code if relevant.
+    validations:
+      required: true
+  - type: dropdown
+    id: workload
+    attributes:
+      label: Workload kind
+      options: [pytest, script, call, not sure]

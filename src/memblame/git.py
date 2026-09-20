@@ -145,6 +145,40 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _remove_orphan_scratch(tmp: Path) -> list[str]:
+    """Remove memblame temp directories whose owning process is gone.
+
+    `remove_stale_worktrees` can only see what `git worktree list` reports. Two kinds of
+    directory never appear there: a run killed before `git worktree add` finished, and the
+    per-run scratch directory that holds the workload's stdout/stderr (unbounded in size,
+    since only its tail is ever read back). Without this sweep they stay for ever.
+
+    A directory is only removed once the pid it recorded is gone, so a concurrent memblame
+    keeps its own. One that records no pid is left alone: it may belong to a run that is
+    still starting up, or to an older memblame.
+    """
+    removed = []
+    try:
+        entries = sorted(tmp.iterdir())
+    except OSError:
+        return removed
+    for base in entries:
+        if not base.name.startswith(WORKTREE_PREFIX):
+            continue
+        try:
+            if not base.is_dir():
+                continue
+            pid = int((base / "pid").read_text())
+        except (OSError, ValueError):
+            continue
+        if _pid_alive(pid):
+            continue
+        shutil.rmtree(base, ignore_errors=True)
+        if not base.exists():
+            removed.append(str(base))
+    return removed
+
+
 def remove_stale_worktrees(repo: Path) -> list[str]:
     """Remove memblame worktrees whose process is gone (killed, e.g. on Windows cancel)."""
     removed = []
@@ -167,7 +201,10 @@ def remove_stale_worktrees(repo: Path) -> list[str]:
         git(repo, "worktree", "remove", "--force", str(wt), check=False)
         shutil.rmtree(base, ignore_errors=True)
         removed.append(str(wt))
-    if removed:
+    # Only after git-registered worktrees are removed properly, so this sweep never races
+    # `git worktree remove` for the same directory.
+    orphans = _remove_orphan_scratch(tmp)
+    if removed or orphans:
         git(repo, "worktree", "prune", check=False)
     return removed
 
@@ -288,7 +325,10 @@ def diff_hunks(repo: Path, base: str, head: str) -> list[Hunk]:
     if head == WORKTREE:  # untracked files count as entirely new
         untracked = git(repo, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.py")
         for rel in filter(None, untracked.split("\0")):
-            n = len((repo / rel).read_text(encoding="utf-8", errors="replace").splitlines())
+            try:
+                n = len((repo / rel).read_text(encoding="utf-8", errors="replace").splitlines())
+            except OSError:
+                continue  # dangling symlink or unreadable file: it cannot be in the workload
             hunks.append(Hunk(rel, 0, 0, 1, max(n, 1)))
     return hunks
 

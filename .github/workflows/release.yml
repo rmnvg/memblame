@@ -1,0 +1,79 @@
+name: release
+
+# Publish from a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
+#
+# One-time setup, outside this repository:
+#   * PyPI: add a trusted publisher for this repo, workflow `release.yml`, environment `pypi`
+#     (https://docs.pypi.org/trusted-publishers/). No API token is stored.
+#   * VS Code Marketplace: register the publisher named in vscode-ext/package.json, then add a
+#     `VSCE_PAT` secret to the `marketplace` environment. Without it the extension step is skipped.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Tag must match the package version
+        run: |
+          version=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/memblame/__init__.py').read_text()).group(1))")
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != package version v$version"; exit 1; }
+      - name: Tag must match the extension version
+        run: |
+          ext=$(python -c "import json; print(json.load(open('vscode-ext/package.json'))['version'])")
+          test "v$ext" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != extension version v$ext"; exit 1; }
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  marketplace:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: marketplace
+    defaults:
+      run:
+        working-directory: vscode-ext
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: npm test
+      - name: Publish to the Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "VSCE_PAT is not set; skipping Marketplace publish"
+            exit 0
+          fi
+          npx vsce publish --no-dependencies

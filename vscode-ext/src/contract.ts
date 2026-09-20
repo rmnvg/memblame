@@ -66,11 +66,18 @@ export interface Finding {
   parent?: string;
 }
 
+/** A function's share of one measurement (not a delta between two). */
+export interface TopFunction {
+  id: string;
+  self: number;
+  cumulative: number;
+}
+
 export interface UnitResult {
   outcome: string;
   peak: Stats;
   end: Stats;
-  top?: FunctionDelta[];
+  top?: TopFunction[];
 }
 
 export interface ComparisonMetric {
@@ -109,6 +116,14 @@ export interface BisectMeasurement {
   skipped?: boolean;
 }
 
+/** One adjacent pair of measured commits in a `range` result. */
+export interface RangeStep {
+  base: string;
+  head: string;
+  commits: number;
+  findings: Finding[];
+}
+
 export interface MemblameResult {
   schema: 1;
   kind: ReportKind;
@@ -132,10 +147,14 @@ export interface MemblameResult {
   incomplete_commits?: number;
   status?: "found" | "no_regression" | "error";
   message?: string;
+  good?: Commit;
+  bad?: Commit;
   culprit?: Commit;
   parent?: Commit;
+  culprit_range?: string[];
   threshold?: number;
-  steps?: number;
+  /** `bisect` emits the step count; `range` emits the per-segment comparisons. */
+  steps?: number | RangeStep[];
   candidates?: number;
   metric?: "peak" | "retained";
   unit?: string;

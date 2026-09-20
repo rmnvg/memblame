@@ -216,6 +216,22 @@ def test_not_a_git_repository(tmp_path, capsys):
     assert code == 2 and "not inside a git repository" in err
 
 
+def test_not_a_git_repository_still_writes_the_json_error_document(tmp_path, capsys):
+    """`--json -o PATH` promises PATH always holds JSON, including on this early exit."""
+    target = tmp_path / "out" / "result.json"
+    code, _, err = run_cli(capsys, "diff", "-C", str(tmp_path), "-w", "call:a:b",
+                           "--json", "-o", str(target))
+    assert code == 2 and "not inside a git repository" in err
+    document = json.loads(target.read_text())
+    assert document["kind"] == "error" and document["schema"] == 1
+    assert "not inside a git repository" in document["error"]
+
+
+def test_not_a_git_repository_prints_the_json_error_document_to_stdout(tmp_path, capsys):
+    code, out, _ = run_cli(capsys, "run", "-C", str(tmp_path), "-w", "call:a:b", "--json")
+    assert code == 2 and json.loads(out)["kind"] == "error"
+
+
 # ------------------------------------------------------------------ configuration
 
 
@@ -483,3 +499,40 @@ def test_bisect_found_across_broken_commit_returns_regression(tmp_path, capsys, 
     assert skipped in result["culprit_range"]
     assert result["measurement_status"] != "complete"
     assert code == 3
+
+
+def test_json_error_goes_to_the_output_file_too(planted, tmp_path, capsys):
+    target = tmp_path / "out" / "result.json"
+    code, out, err = run_cli(capsys, "diff", "-C", str(planted.path), "-w", "bogus:x", "--json",
+                             "-o", str(target))
+    assert code == 1 and "bad workload" in err
+    assert out == ""  # like a successful result, nothing on stdout when -o is given
+    assert json.loads(target.read_text()) == {
+        "schema": 1, "kind": "error", "error": "bad workload 'bogus:x': must start with "
+                                               "pytest:, script: or call:"}
+
+
+def test_json_error_to_an_unwritable_output_still_fails_cleanly(planted, tmp_path, capsys):
+    blocker = tmp_path / "file"
+    blocker.write_text("not a directory")
+    code, _, err = run_cli(capsys, "diff", "-C", str(planted.path), "-w", "bogus:x", "--json",
+                           "-o", str(blocker / "result.json"))
+    assert code == 1 and "could not write report" in err and "Traceback" not in err
+
+
+def test_error_output_is_part_of_the_typed_contract():
+    from memblame.contract import error_output
+
+    assert error_output("boom") == {"schema": 1, "kind": "error", "error": "boom"}
+    with pytest.raises(ValueError, match="invalid result kind"):
+        validate_output(error_output("boom"))  # an error is not a measurement result
+
+
+def test_environment_fingerprint_times_out_instead_of_hanging(monkeypatch):
+    def hang(*args, **kwargs):
+        assert kwargs.get("timeout")  # bounded, like check_interpreter
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(measure.subprocess, "run", hang)
+    with pytest.raises(measure.MeasureError, match="cannot run project interpreter"):
+        measure.environment_fingerprint("python")

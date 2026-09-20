@@ -6,6 +6,7 @@ const dest = path.resolve(__dirname, "..", "python", "memblame");
 fs.rmSync(dest, { recursive: true, force: true });
 fs.mkdirSync(dest, { recursive: true });
 for (const f of fs.readdirSync(src)) {
-  if (f.endsWith(".py")) fs.copyFileSync(path.join(src, f), path.join(dest, f));
+  // py.typed ships too, so a user pointing a type checker at the bundle sees the annotations.
+  if (f.endsWith(".py") || f === "py.typed") fs.copyFileSync(path.join(src, f), path.join(dest, f));
 }
 console.log(`bundled ${fs.readdirSync(dest).length} files into ${dest}`);

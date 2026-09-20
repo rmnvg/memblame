@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, api, artifact, git, report
-from .contract import validate_output
+from .contract import error_output, validate_output
 from .measure import MeasureError, Settings
 
 CONFIG_KEYS = {"workload", "runs", "nframe", "pythonpath", "python", "timeout", "threshold",
@@ -206,7 +206,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         repo = git.repo_root(Path(args.repo))
     except (git.GitError, OSError):
-        print(f"memblame: {args.repo} is not inside a git repository", file=sys.stderr)
+        message = f"{args.repo} is not inside a git repository"
+        print(f"memblame: {message}", file=sys.stderr)
+        if args.json:
+            # Same destination as a successful result, so `-o result.json` always holds JSON.
+            _emit(json.dumps(error_output(message)), args.output, "JSON")
         return 2
     try:
         config = load_config(repo)
@@ -233,9 +237,10 @@ def main(argv: list[str] | None = None) -> int:
                                  verify=args.verify)
                 fmt = report.format_bisect
     except (git.GitError, MeasureError, ValueError, RuntimeError, OSError) as exc:
-        if args.json:
-            print(json.dumps({"schema": 1, "kind": "error", "error": str(exc)}))
         print(f"memblame: error: {exc}", file=sys.stderr)
+        if args.json:
+            # Same destination as a successful result, so `-o result.json` always holds JSON.
+            _emit(json.dumps(error_output(str(exc))), args.output, "JSON")
         return 1
     except KeyboardInterrupt:  # worktrees were already removed by the session's __exit__
         print("memblame: interrupted", file=sys.stderr)
@@ -247,19 +252,25 @@ def main(argv: list[str] | None = None) -> int:
         rendered, label = artifact.render(out, args.report), args.report.upper()
     else:
         rendered, label = fmt(out), "text"
-    if args.output:
-        try:
-            target = artifact.write(rendered, args.output)
-        except OSError as exc:
-            print(f"memblame: error: could not write report to {args.output}: {exc}",
-                  file=sys.stderr)
-            return 1
-        print(f"memblame: wrote {label} report to {target}", file=sys.stderr)
-    else:
-        print(rendered)
+    if not _emit(rendered, args.output, label):
+        return 1
     if _has_measurement_failure(out):
         return 1
     return 3 if _has_regression(out) else 0
+
+
+def _emit(rendered: str, output: str | None, label: str) -> bool:
+    """Print `rendered`, or write it to `output`. False if the file could not be written."""
+    if not output:
+        print(rendered)
+        return True
+    try:
+        target = artifact.write(rendered, output)
+    except OSError as exc:
+        print(f"memblame: error: could not write report to {output}: {exc}", file=sys.stderr)
+        return False
+    print(f"memblame: wrote {label} report to {target}", file=sys.stderr)
+    return True
 
 
 def _has_measurement_failure(out: dict) -> bool:
@@ -268,23 +279,7 @@ def _has_measurement_failure(out: dict) -> bool:
     # endpoints still establish a regression, with uncertainty recorded in the report.
     if out.get("kind") == "bisect" and out.get("status") == "found":
         return False
-    if "measurement_status" in out:
-        return out["measurement_status"] != "complete"
-
-    def failed(result: dict) -> bool:
-        units = result.get("units", {})
-        return (result.get("valid") is False or not units
-                or any(u["outcome"] != "passed" for u in units.values()))
-
-    if out["kind"] == "run":
-        return failed(out["result"])
-    if out["kind"] == "diff":
-        return (out.get("valid") is False
-                or any(failed(r) for r in out.get("results", {}).values()))
-    if out["kind"] == "range":
-        return any(failed(p) for p in out["points"] if p["measured"])
-    # Bisect deliberately skips broken intermediate commits and can still find a culprit.
-    return out.get("status") == "error"
+    return out["measurement_status"] != "complete"
 
 
 def _has_regression(out: dict) -> bool:

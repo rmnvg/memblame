@@ -32,13 +32,19 @@ async function main() {
   // Make an uncommitted change that grows memory, for the "working tree vs HEAD" command.
   const parse = path.join(repo, "shop", "parse.py");
   fs.writeFileSync(parse, fs.readFileSync(parse, "utf8").replace("bytes(100))", "bytes(100), [0] * 30)"));
-  await runTests({
-    vscodeExecutablePath: process.env.VSCODE_EXECUTABLE,
-    extensionDevelopmentPath: extRoot,
-    extensionTestsPath: path.join(__dirname, "suite"),
-    launchArgs: [repo, "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${path.join(work, "ud")}`],
-    extensionTestsEnv: { MEMBLAME_TEST_REPO: repo },
-  });
+  try {
+    await runTests({
+      vscodeExecutablePath: process.env.VSCODE_EXECUTABLE,
+      extensionDevelopmentPath: extRoot,
+      extensionTestsPath: path.join(__dirname, "suite"),
+      launchArgs: [repo, "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", `--user-data-dir=${path.join(work, "ud")}`],
+      extensionTestsEnv: { MEMBLAME_TEST_REPO: repo },
+    });
+  } finally {
+    // The fixture repo plus VS Code's user-data dir is tens of MB per run; without this a
+    // developer's temp directory grows by one every time the suite is run.
+    fs.rmSync(work, { recursive: true, force: true });
+  }
 }
 
 main().catch((err) => {
