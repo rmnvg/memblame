@@ -362,7 +362,8 @@ def _range_chart(points: list[dict], unit: str, findings: list[dict]) -> str:
     peak = [p.get("units", {}).get(unit, {}).get("peak", {}).get("median") for p in points]
     retained = [p.get("units", {}).get(unit, {}).get("end", {}).get("median") for p in points]
     values = [value for value in peak + retained if value is not None]
-    maximum = max(values or [1]) * 1.08
+    # y() divides by this, and an all-zero series is still a series (max() of it is 0).
+    maximum = max(max(values, default=0), 1) * 1.08
     span_x, span_y = width - left - right, height - top - bottom
 
     def x(index: int) -> float:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -362,6 +363,52 @@ def test_stale_worktree_from_killed_run_is_removed(tmp_path):
         assert (live / "wt").exists()
     finally:
         git.git(r.path, "worktree", "remove", "--force", str(live / "wt"), check=False)
+
+
+def test_orphaned_scratch_directories_are_reclaimed(tmp_path):
+    """A hard kill leaves directories `git worktree list` never mentions.
+
+    One killed before `git worktree add` finished, and every per-run scratch directory
+    (which holds the workload's uncapped stdout/stderr), are invisible to git, so without
+    this sweep they accumulate in the temp directory for ever.
+    """
+    def scratch(name, pid=None):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "stdout.log").write_text("x" * 100)
+        if pid is not None:
+            (d / "pid").write_text(str(pid))
+        return d
+
+    dead_setup = scratch(f"{git.WORKTREE_PREFIX}deadsetup", 999999)  # no such process
+    dead_run = scratch("mb-run-dead", 999999)
+    live_setup = scratch(f"{git.WORKTREE_PREFIX}live", os.getpid())
+    live_run = scratch("mb-run-live", os.getpid())
+    no_pid = scratch(f"{git.WORKTREE_PREFIX}nopid")  # older memblame, or still starting up
+    stranger = scratch("not-memblame", 999999)
+
+    removed = git._remove_orphan_scratch(tmp_path)
+
+    assert sorted(Path(r).name for r in removed) == ["mb-deadsetup", "mb-run-dead"]
+    assert not dead_setup.exists() and not dead_run.exists()
+    # A concurrent memblame, an older one and an unrelated directory are all left alone.
+    for kept in (live_setup, live_run, no_pid, stranger):
+        assert kept.exists(), kept
+
+
+def test_a_killed_run_leaves_no_scratch_behind_after_the_next_run(tmp_path):
+    """End to end: the next memblame reclaims what a killed one left in the temp directory."""
+    r = Repo(tmp_path / "repo")
+    r.commit({"a.py": SMALL}, "v1")
+    orphan = Path(tempfile.mkdtemp(prefix="mb-run-"))
+    (orphan / "pid").write_text("999999")
+    (orphan / "stdout.log").write_text("x" * 10_000)
+    try:
+        with session(r, "call:a:run") as s:
+            api.run(s, "HEAD")
+        assert not orphan.exists()
+    finally:
+        shutil.rmtree(orphan, ignore_errors=True)
 
 
 def test_runner_preloads_no_modules_the_workload_might_import(tmp_path):

@@ -106,6 +106,12 @@ def environment_fingerprint(python: str) -> str:
 def _run_once(python: str, root: Path, s: Settings, nframe: int, hints: dict | None,
               attribute: bool, peak_mode: str = "poll", hint_fraction: float = 0.9) -> dict:
     tmp = Path(tempfile.mkdtemp(prefix="mb-run-"))
+    # Record the owner straight away: if this process is killed, the `finally` below never
+    # runs and git.remove_stale_worktrees reclaims the directory on a later run instead.
+    try:
+        (tmp / "pid").write_text(str(os.getpid()))
+    except OSError:
+        pass
     try:
         spec_path, out_path = tmp / "spec.json", tmp / "out.json"
         kind, _, target = s.workload.partition(":")

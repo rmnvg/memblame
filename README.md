@@ -111,8 +111,13 @@ warnings, raw schema-1 result and an interactive range timeline in one dependenc
 ```
 
 Exit code `3` still fails the analysis step after writing the report, so the artifact is
-available for diagnosis without turning a regression green. For a GitHub job summary, use
-`--report md --output "$GITHUB_STEP_SUMMARY"`.
+available for diagnosis without turning a regression green. For a GitHub job summary, write
+the Markdown to stdout and append it, so an earlier step's summary survives (`-o` replaces
+the file it writes to):
+
+```yaml
+- run: memblame diff origin/main HEAD --report md >> "$GITHUB_STEP_SUMMARY"
+```
 
 ### Configuration
 
