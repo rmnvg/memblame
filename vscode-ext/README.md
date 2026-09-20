@@ -57,12 +57,31 @@ only the Python standard library.
 | Setting | Default | |
 |---|---|---|
 | `memblame.workload` | | `pytest:tests/test_x.py::test_y`, `script:path [args]` or `call:module:function` |
-| `memblame.runs` | `3` | max measured runs per commit (stops early once two runs agree) |
-| `memblame.nframe` | `16` | traceback depth for attribution |
-| `memblame.pythonPath` | | interpreter override |
-| `memblame.importPaths` | auto | e.g. `["src"]` |
+| `memblame.runs` | repo config, else `3` | max measured runs per commit (stops early once two runs agree) |
+| `memblame.nframe` | repo config, else `16` | traceback depth for attribution |
+| `memblame.pythonPath` | see below | interpreter that runs your code |
+| `memblame.importPaths` | repo config, else auto | e.g. `["src"]` |
 | `memblame.defaultRange` | `HEAD~20..HEAD` | |
 | `memblame.testCodeLens` | `true` | show "Memory vs HEAD" above tests |
+
+### Which value wins
+
+The editor and the command line share one configuration, so the same repository gives the
+same numbers in both. A value you never set in VS Code is **not** sent to the engine, which
+then uses the repository's `memblame.toml` / `[tool.memblame]` (see the
+[CLI documentation](https://github.com/rmnvg/memblame#configuration)) and finally its
+built-in default. In order, highest first:
+
+- **Interpreter:** `memblame.pythonPath` → `python` in the repository config → the
+  interpreter selected in the Python extension → `.venv` / `venv` in the repository → `python3`.
+- **`runs`, `nframe`, import paths, workload:** the VS Code setting, if you set one → the
+  repository config → the default. The workload you pick from the lens or the palette is
+  remembered per workspace and never written into your repository.
+
+Cached measurements are reused when nothing that affects them changed. If your workload reads
+environment variables or data files that are not part of a commit, list them under
+`cache_env` / `cache_inputs` in the repository config so that changing them re-measures
+(see the CLI documentation).
 
 ## How it works and its limits
 

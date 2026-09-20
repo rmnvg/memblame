@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,19 @@ def test_async_call_workload_is_awaited(tmp_path):
     assert f["verdict"]["function"] == "pkg/a.py::run"
 
 
+def test_sync_and_async_return_values_are_not_counted_as_retained(tmp_path):
+    r = Repo(tmp_path / "repo")
+    code = ("import asyncio\n\ndef sync():\n    return bytearray(4_000_000)\n\n"
+            "async def async_():\n    return bytearray(4_000_000)\n")
+    sha = r.commit({"bench.py": code}, "returns buffers")
+    retained = []
+    for function in ("sync", "async_"):
+        with session(r, f"call:bench:{function}") as s:
+            _, result = s.result(sha)
+        retained.append(result["units"]["workload"]["end"]["median"])
+    assert abs(retained[0] - retained[1]) < 500_000
+
+
 def test_project_pytest_config_with_xdist_cov_randomly(tmp_path):
     """addopts `-n 2 --cov` would run tests in worker processes we cannot see."""
     pytest.importorskip("xdist")
@@ -129,6 +143,25 @@ def test_bisect_skips_commits_where_the_workload_breaks(tmp_path):
     assert any("could not be measured" in w for w in out["warnings"])
 
 
+def test_bisect_verification_finds_earliest_crossing_in_nonmonotonic_history(tmp_path):
+    r = Repo(tmp_path / "repo")
+    for index, size in enumerate((100_000, 4_000_000, 100_000, 100_000, 4_000_000)):
+        r.commit({"bench.py": f"x = bytearray({size})\n# point {index}\n"}, f"point {index}")
+
+    with session(r, "script:bench.py") as s:
+        fast = api.bisect(s, "HEAD~4", "HEAD", threshold="1MB", metric="peak")
+    assert fast["culprit"]["subject"] == "point 4"
+    assert fast["verified"] is False and fast["monotonic"] is None
+    assert any("assumes memory crosses" in warning for warning in fast["warnings"])
+
+    with session(r, "script:bench.py") as s:
+        verified = api.bisect(s, "HEAD~4", "HEAD", threshold="1MB", metric="peak",
+                              verify=True)
+    assert verified["culprit"]["subject"] == "point 1"
+    assert verified["verified"] is True and verified["monotonic"] is False
+    assert any("not monotonic" in warning for warning in verified["warnings"])
+
+
 def test_commit_that_times_out_is_skipped_in_range(tmp_path):
     r = Repo(tmp_path / "repo")
     r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "v1")
@@ -139,6 +172,57 @@ def test_commit_that_times_out_is_skipped_in_range(tmp_path):
     assert [p["valid"] for p in out["points"]] == [True, False, True]
     assert any("SKIPPED" in w and "timed out" in w for w in out["warnings"])
     assert out["findings"] == []
+
+
+def _process_tree_workload(marker: Path) -> str:
+    child = (f"import os,time; open({str(marker)!r}, 'w').write(str(os.getpid())); "
+             "time.sleep(30)")
+    return ("import subprocess,sys,time\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+            "time.sleep(30)\n")
+
+
+def _wait_for_pid(marker: Path) -> int:
+    for _ in range(100):
+        if marker.exists() and marker.read_text():
+            return int(marker.read_text())
+        time.sleep(0.05)
+    raise AssertionError("workload child did not start")
+
+
+def _wait_until_gone(pid: int) -> bool:
+    # os.kill(pid, 0) would *terminate* the process on Windows; git._pid_alive is portable.
+    for _ in range(150):
+        if not git._pid_alive(pid):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_timeout_terminates_workload_descendants(tmp_path):
+    r = Repo(tmp_path / "repo")
+    marker = tmp_path / "child.pid"
+    r.commit({"bench.py": _process_tree_workload(marker)}, "spawns child")
+    with session(r, "script:bench.py", timeout=1) as s:
+        _, result = s.result("HEAD")
+    child_pid = _wait_for_pid(marker)
+    assert "timed out" in result["error"]
+    assert _wait_until_gone(child_pid)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows cancellation is performed by the extension")
+def test_sigterm_cancellation_terminates_workload_descendants(tmp_path):
+    r = Repo(tmp_path / "repo")
+    marker = tmp_path / "child.pid"
+    r.commit({"bench.py": _process_tree_workload(marker)}, "spawns child")
+    proc = subprocess.Popen([
+        sys.executable, "-m", "memblame", "run", "-C", str(r.path),
+        "-w", "script:bench.py", "--runs", "1", "--no-cache", "--python", sys.executable,
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    child_pid = _wait_for_pid(marker)
+    proc.terminate()
+    proc.communicate(timeout=10)
+    assert _wait_until_gone(child_pid)
 
 
 def test_external_benchmark_edit_invalidates_cache(tmp_path):
@@ -153,6 +237,34 @@ def test_external_benchmark_edit_invalidates_cache(tmp_path):
         second = api.run(s, "HEAD")["result"]["units"]["workload"]["peak"]["median"]
         assert s.measured == 1  # not served from the stale cache
     assert second > first + 5_000_000
+
+
+def test_declared_environment_and_file_inputs_invalidate_cache(tmp_path, monkeypatch):
+    r = Repo(tmp_path / "repo")
+    sha = r.commit({"bench.py": "import os\nx = bytearray(int(os.environ['SIZE']))\n"}, "v1")
+    data = tmp_path / "data.txt"
+    data.write_text("one")
+    settings = {"cache_env": ["SIZE"], "cache_inputs": [str(data)]}
+
+    monkeypatch.setenv("SIZE", "100000")
+    with session(r, "script:bench.py", cache=True, **settings) as s:
+        _, first = s.result(sha)
+        assert s.measured == 1
+    with session(r, "script:bench.py", cache=True, **settings) as s:
+        _, again = s.result(sha)
+        assert s.measured == 0
+        assert again["units"]["workload"]["peak"] == first["units"]["workload"]["peak"]
+
+    monkeypatch.setenv("SIZE", "4000000")
+    with session(r, "script:bench.py", cache=True, **settings) as s:
+        _, changed_env = s.result(sha)
+        assert s.measured == 1
+        assert changed_env["units"]["workload"]["peak"]["median"] > 4_000_000
+
+    data.write_text("two")
+    with session(r, "script:bench.py", cache=True, **settings) as s:
+        s.result(sha)
+        assert s.measured == 1
 
 
 def test_clean_working_tree_is_measured_once(tmp_path):
@@ -278,3 +390,65 @@ def test_script_globals_are_not_retained_but_module_caches_are(tmp_path):
     unit = res["units"]["workload"]
     assert unit["peak"]["median"] > 6_000_000  # both lists were alive at the peak
     assert 2_000_000 < unit["end"]["median"] < 4_000_000  # only the cached list outlives
+
+
+def _detached_child_code(marker: Path, seconds: int = 25) -> str:
+    return (f"import os,time; open({str(marker)!r}, 'w').write(str(os.getpid())); "
+            f"time.sleep({seconds})")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses POSIX sessions to escape the process group")
+def test_escaped_descendant_cannot_hang_or_delay_a_timeout(tmp_path):
+    """A daemonised child that keeps stdout open used to make a 1 s timeout take 25 s (and a
+    child that never exits made memblame wait forever): we wait on the runner, not on EOF."""
+    r = Repo(tmp_path / "repo")
+    marker = tmp_path / "escaped.pid"
+    bench = ("import subprocess, sys, time\n"
+             f"subprocess.Popen([sys.executable, '-c', {_detached_child_code(marker)!r}],"
+             " start_new_session=True)\n"
+             "time.sleep(60)\n")
+    r.commit({"bench.py": bench}, "escapes the process group")
+    started = time.time()
+    try:
+        with session(r, "script:bench.py", timeout=1) as s:
+            _, result = s.result("HEAD")
+        assert time.time() - started < 15
+        assert "timed out" in result["error"]
+    finally:
+        if marker.exists() and marker.read_text():
+            try:
+                os.kill(int(marker.read_text()), 9)
+            except OSError:
+                pass
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a finished Windows parent names no children")
+def test_background_process_left_behind_by_a_finished_run_is_removed(tmp_path):
+    """Measurements must not leak processes (or let them skew the next run)."""
+    r = Repo(tmp_path / "repo")
+    marker = tmp_path / "left.pid"
+    bench = ("import os, subprocess, sys, time\n"
+             f"subprocess.Popen([sys.executable, '-c', {_detached_child_code(marker, 60)!r}])\n"
+             f"for _ in range(400):  # exit only once the child is provably running\n"
+             f"    if os.path.exists({str(marker)!r}) and os.path.getsize({str(marker)!r}):\n"
+             "        break\n"
+             "    time.sleep(0.05)\n")
+    r.commit({"bench.py": bench}, "spawns a background child and exits")
+    with session(r, "script:bench.py") as s:
+        _, result = s.result("HEAD")
+    assert result["units"]["workload"]["outcome"] == "passed"
+    assert _wait_until_gone(_wait_for_pid(marker))
+
+
+def test_workload_cannot_block_on_stdin_or_a_full_output_pipe(tmp_path):
+    r = Repo(tmp_path / "repo")
+    bench = ("import sys\n"
+             "sys.stdout.write('x' * 5_000_000)  # far beyond any pipe buffer\n"
+             "sys.stderr.write('e' * 200_000)\n"
+             "try:\n    input()\nexcept EOFError:\n    print('no stdin')\n")
+    r.commit({"bench.py": bench}, "chatty and interactive")
+    started = time.time()
+    with session(r, "script:bench.py", timeout=30) as s:
+        _, result = s.result("HEAD")
+    assert time.time() - started < 25
+    assert result["units"]["workload"]["outcome"] == "passed"

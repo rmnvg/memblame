@@ -320,19 +320,32 @@ def _setup_paths(root: str, pythonpath: list[str] | None) -> list[str]:
 
 
 def _project_modules(dirs: list[str]) -> set[str]:
-    names = set()
+    """Importable module names provided by the checkout, including namespace packages."""
+    names: set[str] = set()
+    seen: set[str] = set()
     for d in dirs:
-        try:
-            entries = os.listdir(d)
-        except OSError:
+        key = os.path.normcase(os.path.realpath(d))
+        if key in seen:  # "." / the repo root / "src" often name the same directory
             continue
-        for e in entries:
-            full = os.path.join(d, e)
-            if e.endswith(".py"):
-                names.add(e[:-3])
-            elif os.path.isfile(os.path.join(full, "__init__.py")):
-                names.add(e)
-    return {n for n in names if n.isidentifier()} - NOT_PROJECT_MODULES
+        seen.add(key)
+        for base, subdirs, files in os.walk(d):
+            if "pyvenv.cfg" in files:  # a virtualenv with any name: not project code
+                subdirs[:] = []
+                continue
+            subdirs[:] = [name for name in subdirs if name not in SKIP_DIRS]
+            rel = os.path.relpath(base, d)
+            parts = [] if rel == "." else rel.split(os.sep)
+            if any(not part.isidentifier() for part in parts):
+                subdirs[:] = []
+                continue
+            for filename in files:
+                if not filename.endswith(".py"):
+                    continue
+                stem = filename[:-3]
+                module_parts = parts if stem == "__init__" else [*parts, stem]
+                if module_parts and all(part.isidentifier() for part in module_parts):
+                    names.add(".".join(module_parts))
+    return {name for name in names if name.split(".")[0] not in NOT_PROJECT_MODULES}
 
 
 def check_environment(root: str, dirs: list[str]) -> list[str]:
@@ -343,7 +356,7 @@ def check_environment(root: str, dirs: list[str]) -> list[str]:
     wanted = _project_modules([*dirs, root, os.path.join(root, "src")])
     problems = []
     for name, mod in list(sys.modules.items()):
-        if name.split(".")[0] not in wanted:
+        if name not in wanted:
             continue
         f = getattr(mod, "__file__", None)
         if f and not os.path.normcase(os.path.realpath(f)).startswith(prefix):
@@ -364,6 +377,9 @@ def _run_call(target: str, meter: Meter) -> None:
             import asyncio
 
             asyncio.run(_await(result))
+        # A return value is workload output, not memory that outlived the workload. Match
+        # script workloads, whose __main__ globals are cleared before retained is sampled.
+        result = None
     except BaseException as exc:  # noqa: BLE001 - report every failure, keep measuring
         meter.stop("error", exc)
         return

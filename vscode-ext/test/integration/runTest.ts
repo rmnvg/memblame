@@ -22,8 +22,12 @@ async function main() {
   cp.execFileSync("git", ["commit", "-qm", "add test path containing spaces"], { cwd: repo });
   fs.mkdirSync(path.join(repo, ".vscode"));
   fs.writeFileSync(
+    path.join(repo, "memblame.toml"),
+    'workload = "call:shop.app:run"\nruns = 1\nnframe = 7\n',
+  );
+  fs.writeFileSync(
     path.join(repo, ".vscode", "settings.json"),
-    JSON.stringify({ "memblame.pythonPath": python, "memblame.workload": "call:shop.app:run", "memblame.runs": 2 }),
+    JSON.stringify({ "memblame.pythonPath": python }),
   );
   // Make an uncommitted change that grows memory, for the "working tree vs HEAD" command.
   const parse = path.join(repo, "shop", "parse.py");

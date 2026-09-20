@@ -4,11 +4,13 @@ import copy
 import json
 import shlex
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from test_edge_cases import Repo, session
 
-from memblame import api, cli, measure
+from memblame import api, artifact, cli, measure, report
 
 
 def test_absolute_repo_script_tracks_revision_and_preserves_arguments(tmp_path):
@@ -66,6 +68,20 @@ def test_python_exception_is_not_a_successful_check(tmp_path, capsys, command):
     out = json.loads(capsys.readouterr().out)
     assert code == 1
     assert any("broken workload" in warning for warning in out["warnings"])
+
+
+def test_failed_diff_reports_are_explicitly_incomplete(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.commit({"bench.py": "x = 1\n"}, "good")
+    repo.commit({"bench.py": "raise ValueError('broken workload')\n"}, "broken")
+    with session(repo, "script:bench.py") as s:
+        out = api.diff(s, "HEAD~1", "HEAD")
+
+    assert out["measurement_status"] == "incomplete"
+    for rendered in (report.format_diff(out), artifact.markdown(out),
+                     artifact.html_report(out)):
+        assert "incomplete" in rendered.lower()
+        assert "no significant memory change" not in rendered.lower()
 
 
 @pytest.mark.parametrize("command", ["run", "diff", "range", "bisect"])
@@ -154,6 +170,25 @@ def test_no_collected_tests_are_a_failed_measurement(tmp_path, monkeypatch):
     monkeypatch.setattr(measure, "_run_once", lambda *a, **kw: empty)
     with pytest.raises(measure.MeasureError, match="no measurements"):
         measure.measure(sys.executable, tmp_path, measure.Settings("pytest:tests", runs=1))
+
+
+def test_concurrent_cache_writers_use_independent_atomic_temp_files(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    sha = repo.commit({"bench.py": "x = 1\n"}, "initial")
+    settings = measure.Settings("script:bench.py", runs=1)
+    cache = measure.Cache(repo.path, sys.executable, settings)
+    writers = 12
+    barrier = threading.Barrier(writers)
+
+    def write(index: int) -> None:
+        barrier.wait()
+        cache.put(sha, {"schema": 1, "writer": index, "payload": "x" * 100_000})
+
+    with ThreadPoolExecutor(max_workers=writers) as pool:
+        list(pool.map(write, range(writers)))
+    stored = cache.get(sha)
+    assert stored is not None and stored["writer"] in range(writers)
+    assert not list(cache.dir.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("windows", [False, True])

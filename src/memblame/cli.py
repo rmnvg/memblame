@@ -10,9 +10,11 @@ import sys
 from pathlib import Path
 
 from . import __version__, api, artifact, git, report
+from .contract import validate_output
 from .measure import MeasureError, Settings
 
-CONFIG_KEYS = {"workload", "runs", "nframe", "pythonpath", "python", "timeout", "threshold"}
+CONFIG_KEYS = {"workload", "runs", "nframe", "pythonpath", "python", "timeout", "threshold",
+               "cache_env", "cache_inputs"}
 
 
 def _toml():
@@ -71,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--python", help="project interpreter (default: .venv or current)")
     common.add_argument("--timeout", type=float, help="seconds per run (default 900)")
     common.add_argument("--no-cache", action="store_true", help="ignore and don't write cache")
+    common.add_argument("--cache-env", action="append", metavar="NAME",
+                        help="environment variable that invalidates cached measurements; "
+                             "repeatable")
+    common.add_argument("--cache-input", action="append", metavar="PATH",
+                        help="file or directory that invalidates cached measurements; repeatable")
     output = common.add_mutually_exclusive_group()
     output.add_argument("--json", action="store_true", help="print JSON (schema 1)")
     output.add_argument("--report", choices=["md", "markdown", "html"],
@@ -107,11 +114,14 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--threshold", help="e.g. 200MB, +20MB, +10%% (default: noise band)")
     b.add_argument("--unit", help="unit (e.g. pytest node id) to track")
     b.add_argument("--metric", choices=["peak", "retained"])
+    b.add_argument("--verify", action="store_true",
+                   help="measure every candidate to verify the earliest threshold crossing")
     return p
 
 
 _CONFIG_TYPES = {"workload": str, "runs": int, "nframe": int, "python": str, "threshold": str,
-                 "timeout": (int, float), "pythonpath": (str, list)}
+                 "timeout": (int, float), "pythonpath": (str, list),
+                 "cache_env": (str, list), "cache_inputs": (str, list)}
 
 
 def _check_types(config: dict) -> None:
@@ -123,6 +133,9 @@ def _check_types(config: dict) -> None:
             raise ValueError(f"config key {key!r} must be {names}, got {value!r}")
         if key in ("runs", "nframe") and value < 1:
             raise ValueError(f"config key {key!r} must be at least 1, got {value!r}")
+        if key in ("pythonpath", "cache_env", "cache_inputs") and isinstance(value, list):
+            if not all(isinstance(item, str) for item in value):
+                raise ValueError(f"config key {key!r} must contain only strings, got {value!r}")
 
 
 def _interpreter(value: str | None, base: Path) -> str | None:
@@ -148,6 +161,13 @@ def settings_from(args: argparse.Namespace, config: dict, repo: Path | None = No
     pythonpath = args.pythonpath or config.get("pythonpath")
     if isinstance(pythonpath, str):
         pythonpath = [pythonpath]
+    cache_env = args.cache_env if args.cache_env is not None else config.get("cache_env", [])
+    cache_inputs = (args.cache_input if args.cache_input is not None
+                    else config.get("cache_inputs", []))
+    if isinstance(cache_env, str):
+        cache_env = [cache_env]
+    if isinstance(cache_inputs, str):
+        cache_inputs = [cache_inputs]
     for flag in ("runs", "nframe", "timeout"):
         value = getattr(args, flag)
         if value is not None and value <= 0:
@@ -160,6 +180,8 @@ def settings_from(args: argparse.Namespace, config: dict, repo: Path | None = No
         python=(_interpreter(args.python, Path.cwd()) if args.python
                 else _interpreter(config.get("python"), repo or Path.cwd())),
         timeout=args.timeout or config.get("timeout", 900.0),
+        cache_env=cache_env,
+        cache_inputs=cache_inputs,
     )
 
 
@@ -195,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
                 fmt = report.format_range
             else:
                 threshold = args.threshold or config.get("threshold")
-                out = api.bisect(s, args.good, args.bad, threshold, args.unit, args.metric)
+                out = api.bisect(s, args.good, args.bad, threshold, args.unit, args.metric,
+                                 verify=args.verify)
                 fmt = report.format_bisect
     except (git.GitError, MeasureError, ValueError, RuntimeError) as exc:
         if args.json:
@@ -205,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:  # worktrees were already removed by the session's __exit__
         print("memblame: interrupted", file=sys.stderr)
         return 130
+    out = validate_output(out)
     if args.json:
         rendered, label = json.dumps(out, indent=1), "JSON"
     elif args.report:
@@ -228,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _has_measurement_failure(out: dict) -> bool:
     """A missing/failed measurement must not look like a successful regression check."""
+    if "measurement_status" in out:
+        return out["measurement_status"] != "complete"
+
     def failed(result: dict) -> bool:
         units = result.get("units", {})
         return (result.get("valid") is False or not units

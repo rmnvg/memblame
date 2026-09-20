@@ -1,4 +1,12 @@
 // Render memblame JSON (schema 1) into webview HTML. No vscode imports (unit-testable).
+import {
+  Commit,
+  Finding,
+  FunctionDelta,
+  MemblameResult,
+  Point,
+  Verdict,
+} from "./contract";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -21,7 +29,7 @@ function link(file: string, line: number, text: string): string {
   return `<a href="#" class="src" data-file="${esc(file)}" data-line="${Number(line) || 1}">${esc(text)}</a>`;
 }
 
-function commitLabel(c: any): string {
+function commitLabel(c?: Commit): string {
   if (!c) {
     return "";
   }
@@ -33,7 +41,7 @@ function commitLabel(c: any): string {
 
 // ------------------------------------------------------------------ findings
 
-export function verdictHtml(v: any): string {
+export function verdictHtml(v?: Verdict): string {
   if (!v || v.kind === "none") {
     return "";
   }
@@ -41,31 +49,31 @@ export function verdictHtml(v: any): string {
   if (v.kind === "unattributed") {
     return `<p class="verdict muted">Not attributed: ${esc(v.reason ?? "no attribution data")}</p>${note}`;
   }
-  const name = v.qualname === "<module>" ? "module level" : `${v.qualname}()`;
-  const where = link(v.file, v.line, `${name}  ${v.file}:${v.line}`);
+  const name = v.qualname === "<module>" ? "module level" : `${v.qualname ?? "unknown"}()`;
+  const where = link(v.file ?? "", v.line ?? 1, `${name}  ${v.file ?? "?"}:${v.line ?? 1}`);
   const parts = [
-    `<p class="verdict"><span class="tag ${v.kind}">${v.kind}</span> ${where} <b>${mb(v.cum_delta, true)}</b></p>`,
+    `<p class="verdict"><span class="tag ${v.kind}">${v.kind}</span> ${where} <b>${mb(v.cum_delta ?? 0, true)}</b></p>`,
   ];
   if (v.kind === "direct") {
-    const hunks = (v.hunks ?? []).map((h: any) => link(h.file, h.new_start, h.header)).join(", ");
+    const hunks = (v.hunks ?? []).map((h) => link(h.file, h.new_start, h.header)).join(", ");
     parts.push(`<p class="sub">This function changed in ${hunks || "the diff"}.</p>`);
   } else {
     parts.push(
       `<p class="sub">This function did not change; its memory grew because of a change elsewhere (a caller, data or config). See changed functions below.</p>`,
     );
   }
-  const hot = (v.hot_lines ?? []).map((l: any) => `<li>${link(l.file, l.line, `${l.file}:${l.line}`)} ${mb(l.bytes)}</li>`);
+  const hot = (v.hot_lines ?? []).map((l) => `<li>${link(l.file, l.line, `${l.file}:${l.line}`)} ${mb(l.bytes)}</li>`);
   if (hot.length) {
     parts.push(`<p class="sub">Hot lines</p><ul class="lines">${hot.join("")}</ul>`);
   }
-  const alloc = (v.allocated_at ?? []).map((l: any) => `<li>${link(l.file, l.line, `${l.file}:${l.line}`)} ${mb(l.bytes)}</li>`);
+  const alloc = (v.allocated_at ?? []).map((l) => `<li>${link(l.file, l.line, `${l.file}:${l.line}`)} ${mb(l.bytes)}</li>`);
   if (alloc.length) {
     parts.push(`<p class="sub">Memory is allocated at</p><ul class="lines">${alloc.join("")}</ul>`);
   }
   return parts.join("") + note;
 }
 
-export function functionsTable(fns: any[]): string {
+export function functionsTable(fns: FunctionDelta[]): string {
   if (!fns?.length) {
     return "";
   }
@@ -74,13 +82,13 @@ export function functionsTable(fns: any[]): string {
     .map(
       (f) =>
         `<tr><td class="num">${mb(f.cum_delta, true)}</td><td class="num">${mb(f.self_delta, true)}</td>` +
-        `<td>${link(f.file, f.line, f.id)}${f.changed ? ' <span class="tag direct">changed</span>' : ""}</td></tr>`,
+        `<td>${link(f.file ?? "", f.line ?? 1, f.id)}${f.changed ? ' <span class="tag direct">changed</span>' : ""}</td></tr>`,
     )
     .join("");
   return `<table class="fns"><thead><tr><th class="num">Δ incl. callees</th><th class="num">Δ own</th><th>function</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-export function findingCard(f: any, commit?: any): string {
+export function findingCard(f: Finding, commit?: Commit): string {
   const up = f.delta > 0;
   const head = commit ? `<div class="commit">${commitLabel(commit)}</div>` : "";
   return (
@@ -108,7 +116,7 @@ export function niceStep(raw: number): number {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * pow;
 }
 
-export function chartSvg(points: any[], unit: string, flaggedPeak: Set<number>, flaggedEnd: Set<number> = new Set()): string {
+export function chartSvg(points: Point[], unit: string, flaggedPeak: Set<number>, flaggedEnd: Set<number> = new Set()): string {
   const W = 760, H = 240, L = 64, R = 36, T = 16, B = 36;
   const s: Series = {
     peak: points.map((p) => p.units?.[unit]?.peak?.median ?? null),
@@ -176,7 +184,7 @@ export function chartSvg(points: any[], unit: string, flaggedPeak: Set<number>, 
 
 // ------------------------------------------------------------------ views
 
-function unitsOf(points: any[]): string[] {
+function unitsOf(points: Point[]): string[] {
   const names: string[] = [];
   for (const p of points) {
     for (const u of Object.keys(p.units ?? {})) {
@@ -188,7 +196,7 @@ function unitsOf(points: any[]): string[] {
   return names;
 }
 
-function warnings(d: any): string {
+function warnings(d: MemblameResult): string {
   const ws: string[] = d.warnings ?? [];
   const notes: string[] = d.notes ?? [];
   return (
@@ -197,10 +205,10 @@ function warnings(d: any): string {
   );
 }
 
-function renderRange(d: any): string {
-  const points: any[] = d.points ?? [];
+function renderRange(d: MemblameResult): string {
+  const points = d.points ?? [];
   const units = unitsOf(points);
-  const findings: any[] = d.findings ?? [];
+  const findings = d.findings ?? [];
   const bySha = new Map(points.map((p, i) => [p.commit.sha, i]));
   const ranked = [...units].sort(
     (a, b) =>
@@ -214,7 +222,7 @@ function renderRange(d: any): string {
   const charts = ranked
     .map((u, k) => {
       const at = (metric: string) =>
-        new Set(findings.filter((f) => f.unit === u && f.metric === metric).map((f) => bySha.get(f.commit) ?? -1));
+        new Set(findings.filter((f) => f.unit === u && f.metric === metric).map((f) => f.commit ? bySha.get(f.commit) ?? -1 : -1));
       return `<div class="unit-chart" data-unit="${esc(u)}" ${k ? "hidden" : ""}>${chartSvg(points, u, at("peak"), at("retained"))}</div>`;
     })
     .join("");
@@ -229,7 +237,7 @@ function renderRange(d: any): string {
       const fs = findings.filter((f) => f.commit === p.commit.sha);
       const rows = Object.entries(p.units ?? {})
         .map(
-          ([name, u]: [string, any]) =>
+          ([name, u]) =>
             `<tr><td>${esc(name)}</td><td class="num">${mb(u.peak.median)}</td><td class="num">${mb(u.end.median)}</td><td>${esc(u.outcome)}</td></tr>`,
         )
         .join("");
@@ -240,8 +248,10 @@ function renderRange(d: any): string {
       );
     })
     .join("");
-  const summary = findings.length
-    ? `<h2>Findings</h2>${findings.map((f) => findingCard(f, points[bySha.get(f.commit) ?? 0]?.commit)).join("")}`
+  const summary = d.measurement_status && d.measurement_status !== "complete"
+    ? `<h2>Findings</h2><p class="big bad">Measurement incomplete; no memory-regression conclusion.</p>`
+    : findings.length
+    ? `<h2>Findings</h2>${findings.map((f) => findingCard(f, points[f.commit ? bySha.get(f.commit) ?? 0 : 0]?.commit)).join("")}`
     : `<h2>Findings</h2><p>No significant memory changes in this range.</p>`;
   return (
     `<h1>Memory over ${points.length} commits</h1>` +
@@ -251,17 +261,17 @@ function renderRange(d: any): string {
   );
 }
 
-function renderDiff(d: any): string {
+function renderDiff(d: MemblameResult): string {
   const title = `${commitLabel(d.base)} → ${commitLabel(d.head)}`;
   if (d.valid === false) {
     return `<h1>Comparison</h1><p>${title}</p>`;
   }
-  const findings: any[] = d.findings ?? [];
+  const findings = d.findings ?? [];
   const rows = (d.units ?? [])
-    .filter((u: any) => u.status === "compared")
-    .flatMap((u: any) =>
-      u.metrics.map(
-        (m: any) =>
+    .filter((u) => u.status === "compared")
+    .flatMap((u) =>
+      (u.metrics ?? []).map(
+        (m) =>
           `<tr class="${m.significant ? (m.delta > 0 ? "bad" : "good") : ""}"><td>${esc(u.name)}</td><td>${esc(m.metric)}</td>` +
           `<td class="num">${mb(m.base)}</td><td class="num">${mb(m.head)}</td><td class="num">${mb(m.delta, true)}</td>` +
           `<td class="num muted">±${mb(m.band)}</td></tr>`,
@@ -269,19 +279,21 @@ function renderDiff(d: any): string {
     )
     .join("");
   const other = (d.units ?? [])
-    .filter((u: any) => u.status !== "compared")
-    .map((u: any) => {
+    .filter((u) => u.status !== "compared")
+    .map((u) => {
       const why =
         u.status === "outcome_changed"
-          ? `outcome changed ${esc(u.outcome.base)} → ${esc(u.outcome.head)}, so memory is not compared`
+          ? `outcome changed ${esc(u.outcome?.base)} → ${esc(u.outcome?.head)}, so memory is not compared`
           : u.status === "new"
             ? "only exists after the change"
             : "only exists before the change";
       return `<li>${esc(u.name)}: ${why}</li>`;
     })
     .join("");
-  const changed = (d.changed_functions ?? []).map((c: any) => link(c.file, c.line, c.id)).join(", ");
-  const verdict = findings.length
+  const changed = (d.changed_functions ?? []).map((c) => link(c.file, c.line, c.id)).join(", ");
+  const verdict = d.measurement_status && d.measurement_status !== "complete"
+    ? `<p class="big bad">Measurement incomplete; no memory-regression conclusion.</p>`
+    : findings.length
     ? findings.some((f) => f.delta > 0)
       ? `<p class="big bad">Memory went up.</p>`
       : `<p class="big good">Memory went down.</p>`
@@ -295,26 +307,27 @@ function renderDiff(d: any): string {
   );
 }
 
-function renderBisect(d: any): string {
+function renderBisect(d: MemblameResult): string {
   if (d.status !== "found") {
     return `<h1>Bisect</h1><p class="big">${esc(d.message)}</p>`;
   }
   const trail = (d.measurements ?? [])
     .map(
-      (t: any) =>
+      (t) =>
         `<tr class="${t.skipped ? "" : t.bad ? "bad" : "good"}"><td>${t.skipped ? "skipped" : t.bad ? "bad" : "good"}</td>` +
         `<td>${commitLabel(t.commit)}</td><td class="num">${t.value === null || t.value === undefined ? "–" : mb(t.value)}</td></tr>`,
     )
     .join("");
+  const title = d.verified ? "First verified crossing" : "Threshold crossing";
   return (
-    `<h1>First bad commit</h1><p class="big">${commitLabel(d.culprit)}</p>` +
-    `<p class="muted">${esc(d.unit)} · ${esc(d.metric)} above ${mb(d.threshold)} · ${d.steps} bisect steps for ${d.candidates} candidate commits</p>` +
-    (d.findings ?? []).map((f: any) => findingCard(f)).join("") +
+    `<h1>${title}</h1><p class="big">${commitLabel(d.culprit)}</p>` +
+    `<p class="muted">${esc(d.unit)} · ${esc(d.metric)} above ${mb(d.threshold ?? 0)} · ${d.steps} bisect steps for ${d.candidates} candidate commits</p>` +
+    (d.findings ?? []).map((f) => findingCard(f)).join("") +
     `<h2>Measurements</h2><table class="fns"><tbody>${trail}</tbody></table>`
   );
 }
 
-export function renderBody(d: any): string {
+export function renderBody(d: MemblameResult): string {
   const py = String(d.python ?? "");
   const repo = String(d.repo ?? "");
   const shownPy = repo && py.startsWith(repo + "/") ? py.slice(repo.length + 1) : py;
@@ -333,7 +346,10 @@ export function renderBody(d: any): string {
     default:
       body = `<pre>${esc(JSON.stringify(d, null, 1))}</pre>`;
   }
-  return warnings(d) + body + meta;
+  const status = d.measurement_status && d.measurement_status !== "complete"
+    ? `<div class="warn"><p>Measurement ${esc(d.measurement_status)}; results are incomplete.</p></div>`
+    : "";
+  return warnings(d) + status + body + meta;
 }
 
 const STYLE = `
@@ -394,7 +410,7 @@ if (unit) unit.addEventListener('change', () => {
 });
 `;
 
-export function renderHtml(d: any, nonce: string, cspSource: string): string {
+export function renderHtml(d: MemblameResult, nonce: string, cspSource: string): string {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0"><title>MemBlame</title><style>${STYLE}</style></head>

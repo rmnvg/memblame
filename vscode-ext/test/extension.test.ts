@@ -5,9 +5,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { buildArgs, parseProgress, runMemblame } from "../src/cli";
+import { buildArgs, parseProgress, runMemblame, chooseInterpreters } from "../src/cli";
+import { MemblameResult, Point, parseEngineResponse } from "../src/contract";
 import { chartSvg, esc, mb, niceStep, renderHtml } from "../src/render";
-import { findTests, isTestFile, locateScope, moduleName, pytestWorkload, quoteWorkloadArg, suggestWorkloads, tomlDefinesWorkload } from "../src/workload";
+import { findTests, isTestFile, locateScope, moduleName, pytestWorkload, quoteWorkloadArg, suggestWorkloads, tomlDefinesKey, tomlDefinesWorkload } from "../src/workload";
 
 const fixture = (name: string) =>
   JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "test", "fixtures", `${name}.json`), "utf8"));
@@ -55,7 +56,8 @@ test("generated script workload runs with spaces; a crashed workload is rejected
     const request = { python, repo, bundledPath: bundled,
       args: ["run", "--no-cache", "--runs", "1", ...buildArgs({ workload, python, repo })] };
     const result = await runMemblame(request).result;
-    assert.equal(result.result.units.workload.outcome, "passed");
+    assert.equal(result.kind, "run");
+    assert.equal(result.result?.units.workload.outcome, "passed");
     fs.writeFileSync(path.join(repo, rel), "import os\nos._exit(7)\n");
     await assert.rejects(runMemblame(request).result, /runner crashed \(exit 7\)/);
   } finally {
@@ -73,6 +75,15 @@ test("buildArgs", () => {
   const args = buildArgs({ workload: "pytest:t.py", runs: 2, importPaths: ["src"], python: "/py", repo: "/r" });
   assert.deepEqual(args, ["-C", "/r", "-w", "pytest:t.py", "--python", "/py", "--json", "--runs", "2", "--pythonpath", "src"]);
   assert.deepEqual(buildArgs({ python: "/py", repo: "/r" }), ["-C", "/r", "--python", "/py", "--json"]);
+  assert.deepEqual(buildArgs({ repo: "/r" }), ["-C", "/r", "--json"]);
+});
+
+test("engine result contract rejects unknown schemas and incomplete envelopes", () => {
+  assert.throws(() => parseEngineResponse({ schema: 2, kind: "diff" }), /schema 2/);
+  assert.throws(
+    () => parseEngineResponse({ schema: 1, kind: "diff", repo: "/r" }),
+    /field workload is missing/,
+  );
 });
 
 test("repository workload configuration detection", () => {
@@ -138,7 +149,7 @@ test("diff and bisect reports", () => {
   assert.match(diff, /data-file="shop\/parse.py"/);
   assert.doesNotMatch(diff, /undefined|NaN/);
   const bisect = renderHtml(fixture("bisect"), "N", "c");
-  assert.match(bisect, /First bad commit/);
+  assert.match(bisect, /Threshold crossing/);
   assert.match(bisect, /include raw payload in rows/);
   assert.doesNotMatch(bisect, /undefined|NaN/);
 });
@@ -150,10 +161,15 @@ test("nice axis steps", () => {
 });
 
 test("chart handles gaps and a single point", () => {
-  const pts = [
-    { commit: { short: "a", subject: "s" }, units: { u: { peak: { median: 10 }, end: { median: 1 } } } },
-    { commit: { short: "b", subject: "s" }, units: {} },
-    { commit: { short: "c", subject: "s" }, units: { u: { peak: { median: 20 }, end: { median: 2 } } } },
+  const unit = (peak: number, end: number) => ({ outcome: "passed",
+    peak: { median: peak, min: peak, max: peak }, end: { median: end, min: end, max: end } });
+  const point = (short: string, units: Point["units"]): Point => ({
+    commit: { sha: short, short, subject: "s", author: "x" }, measured: true, valid: true, units,
+  });
+  const pts: Point[] = [
+    point("a", { u: unit(10, 1) }),
+    point("b", {}),
+    point("c", { u: unit(20, 2) }),
   ];
   const svg = chartSvg(pts, "u", new Set([2]));
   assert.doesNotMatch(svg, /NaN/);
@@ -185,8 +201,11 @@ test("locateScope finds the function in the current text, nearest to the old lin
 });
 
 test("reports explain skipped commits and units that were not compared", () => {
-  const diff = {
-    kind: "diff", workload: "w", python: "p", valid: true, findings: [], notes: ["working tree is clean"],
+  const diff: MemblameResult = {
+    schema: 1, kind: "diff", repo: "/r", workload: "w", python: "p",
+    settings: { runs: 1, nframe: 16, timeout: 10, pythonpath: null },
+    measurement_status: "complete", warnings: [], valid: true, findings: [],
+    notes: ["working tree is clean"],
     base: { sha: "a", short: "a", subject: "s", author: "x" }, head: { sha: "WORKTREE", short: "working", subject: "", author: "" },
     units: [
       { name: "t::a", status: "outcome_changed", outcome: { base: "passed", head: "error" } },
@@ -203,4 +222,33 @@ test("reports explain skipped commits and units that were not compared", () => {
   const r = renderHtml(range, "N", "c");
   assert.match(r, /Skipped: this commit could not be measured/);
   assert.doesNotMatch(r, /undefined|NaN/);
+});
+
+test("interpreter precedence: explicit setting > repo config > Python extension > CLI discovery", () => {
+  const base = { repoDefinesPython: false, fallback: "python3" };
+  const pick = (input: Parameters<typeof chooseInterpreters>[0]) => {
+    const { launcher, project } = chooseInterpreters(input);
+    return [launcher, project];
+  };
+  // 1. an explicit memblame.pythonPath wins over everything, and runs the project too
+  assert.deepEqual(
+    pick({ ...base, explicit: "/x/py", repoDefinesPython: true, selected: "/sel/py" }),
+    ["/x/py", "/x/py"],
+  );
+  // 2. repository config beats the editor's selection: no --python, so the CLI applies it
+  assert.deepEqual(pick({ ...base, repoDefinesPython: true, selected: "/sel/py" }), ["/sel/py", undefined]);
+  // 3. the interpreter selected in the Python extension beats auto-discovery
+  assert.deepEqual(pick({ ...base, selected: "/sel/py" }), ["/sel/py", "/sel/py"]);
+  // 4./5. nothing selected: the CLI discovers .venv itself; the engine is launched with python3
+  assert.deepEqual(pick(base), ["python3", undefined]);
+  assert.deepEqual(pick({ ...base, repoDefinesPython: true }), ["python3", undefined]);
+});
+
+test("repository config detection works for any key, only in MemBlame's table", () => {
+  assert.equal(tomlDefinesKey('python = ".venv/bin/python"\n', false, "python"), true);
+  assert.equal(tomlDefinesKey('[tool.memblame]\npython = "py"\n', true, "python"), true);
+  assert.equal(tomlDefinesKey('[tool.memblame]\nruns = 2\n', true, "python"), false);
+  assert.equal(tomlDefinesKey('[tool.black]\npython = "x"\n', true, "python"), false);
+  assert.equal(tomlDefinesKey('[project]\nname = "python"\n', true, "python"), false);
+  assert.equal(tomlDefinesKey('pythonpath = ["src"]\n', false, "python"), false, "prefix of another key");
 });

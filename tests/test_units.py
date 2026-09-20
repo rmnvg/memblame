@@ -3,11 +3,18 @@
 import textwrap
 import tracemalloc
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from memblame import api, blame, git
-from memblame.runner import Attributor, _grouped_traces, innermost_scope, scopes_from_source
+from memblame.runner import (
+    Attributor,
+    _grouped_traces,
+    check_environment,
+    innermost_scope,
+    scopes_from_source,
+)
 
 
 def _alloc_inner():
@@ -123,6 +130,23 @@ def test_attributor_ignores_pseudo_files(tmp_path):
     assert a.project_rel(str(tmp_path / ".venv" / "lib.py")) is None
 
 
+def test_environment_check_handles_shared_namespace_packages(tmp_path, monkeypatch):
+    source = tmp_path / "src" / "shared_namespace"
+    source.mkdir(parents=True)
+    (source / "local.py").write_text("x = 1\n")
+    local = ModuleType("shared_namespace.local")
+    local.__file__ = "/outside/checkout/shared_namespace/local.py"
+    external = ModuleType("shared_namespace.external")
+    external.__file__ = "/outside/checkout/shared_namespace/external.py"
+    monkeypatch.setitem(__import__("sys").modules, "shared_namespace.local", local)
+    monkeypatch.setitem(__import__("sys").modules, "shared_namespace.external", external)
+
+    problems = check_environment(str(tmp_path), [str(tmp_path / "src")])
+    assert problems == [
+        "shared_namespace.local imported from /outside/checkout/shared_namespace/local.py"
+    ]
+
+
 DIFF = """\
 diff --git a/pkg/a.py b/pkg/a.py
 --- a/pkg/a.py
@@ -200,3 +224,18 @@ def test_split_args_keeps_windows_paths(monkeypatch):
     monkeypatch.setattr(measure.os, "name", "nt")
     assert measure.split_args(r'C:\bench\run.py --out "C:\my dir\x.txt"') == [
         r"C:\bench\run.py", "--out", r"C:\my dir\x.txt"]
+
+
+def test_project_module_scan_skips_virtualenvs_and_duplicate_directories(tmp_path):
+    from memblame.runner import _project_modules
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "mod.py").write_text("")
+    env = tmp_path / "customenv"  # not named .venv/venv/env: recognised by pyvenv.cfg
+    (env / "Lib" / "libs").mkdir(parents=True)
+    (env / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (env / "Lib" / "libs" / "vendored.py").write_text("")
+    names = _project_modules([str(tmp_path), str(tmp_path), str(tmp_path / ".")])
+    assert {"pkg", "pkg.mod"} <= names
+    assert not any(n.startswith("customenv") for n in names)

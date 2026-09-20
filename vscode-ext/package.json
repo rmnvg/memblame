@@ -78,17 +78,17 @@
           "type": "number",
           "default": 3,
           "minimum": 1,
-          "description": "Measured runs per commit (median is reported)."
+          "markdownDescription": "Maximum measured runs per commit (the median is reported). Leave unset to use `runs` from the repository's memblame.toml / [tool.memblame], else 3."
         },
         "memblame.nframe": {
           "type": "number",
           "default": 16,
-          "description": "Traceback depth used for attribution. Increase if the report warns about truncated stacks."
+          "markdownDescription": "Traceback depth used for attribution; increase it if the report notes truncated stacks. Leave unset to use `nframe` from the repository's memblame.toml / `[tool.memblame]`, else 16."
         },
         "memblame.pythonPath": {
           "type": "string",
           "default": "",
-          "description": "Interpreter with your project's dependencies. Empty: use the interpreter selected in the Python extension."
+          "markdownDescription": "Interpreter that runs **your** code (it needs your project's dependencies). Precedence: this setting → `python` in the repository's memblame.toml / `[tool.memblame]` → the interpreter selected in the Python extension → `.venv`/`venv` in the repository → `python3`."
         },
         "memblame.importPaths": {
           "type": "array",
@@ -96,7 +96,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Directories (relative to the repo) to import your project from, e.g. `src`. Empty: auto-detect."
+          "markdownDescription": "Directories (relative to the repo) to import your project from, e.g. `src`. Leave empty to use `pythonpath` from the repository's config, else auto-detect."
         },
         "memblame.defaultRange": {
           "type": "string",

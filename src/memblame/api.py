@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import blame, git
+from .contract import PublicResult
 from .measure import (
     Cache,
     MeasureError,
@@ -56,7 +57,10 @@ class Session:
 
     def header(self, kind: str) -> dict:
         return {"schema": SCHEMA, "kind": kind, "repo": str(self.repo),
-                "workload": self.settings.workload, "python": self.python}
+                "workload": self.settings.workload, "python": self.python,
+                "settings": {"runs": self.settings.runs, "nframe": self.settings.nframe,
+                             "timeout": self.settings.timeout,
+                             "pythonpath": self.settings.pythonpath}}
 
     def result(self, rev: str, label: str = "", attribute: bool = False,
                ) -> tuple[git.Commit, dict]:
@@ -106,10 +110,10 @@ def failed_result(error: str) -> dict:
             "functions": {}, "attributed": True, "warnings": [], "runs": 0}
 
 
-def run(session: Session, rev: str = git.WORKTREE) -> dict:
+def run(session: Session, rev: str = git.WORKTREE) -> PublicResult:
     commit, res = session.result(rev, attribute=True)
     return {**session.header("run"), "commit": commit.to_json(), "result": res,
-            "warnings": _warnings(commit, res)}
+            "measurement_status": _result_status(res), "warnings": _warnings(commit, res)}
 
 
 def _compare(session: Session, a: tuple[git.Commit, dict], b: tuple[git.Commit, dict],
@@ -123,7 +127,7 @@ def _compare(session: Session, a: tuple[git.Commit, dict], b: tuple[git.Commit, 
     return cmp, a, b
 
 
-def diff(session: Session, base: str, head: str = git.WORKTREE) -> dict:
+def diff(session: Session, base: str, head: str = git.WORKTREE) -> PublicResult:
     notes = []
     if head == git.WORKTREE and not git.is_dirty(session.repo):
         # Nothing uncommitted: measuring the same code twice would only double the wait.
@@ -141,6 +145,7 @@ def diff(session: Session, base: str, head: str = git.WORKTREE) -> dict:
         out.update(cmp)
         out["results"] = {"base": _brief(a[1]), "head": _brief(b[1])}
     out["warnings"] = _dedupe(_warnings(*a) + _warnings(*b))
+    out["measurement_status"] = _combined_status(a[1], b[1])
     return out
 
 
@@ -159,7 +164,7 @@ def _differs(a: dict, b: dict) -> bool:
     return False
 
 
-def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> dict:
+def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> PublicResult:
     """Memory over a first-parent commit range.
 
     Adaptive by default: measure both ends and only subdivide segments whose ends differ
@@ -218,7 +223,8 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
     findings.sort(key=lambda f: -abs(f["delta"]))
     return {**session.header("range"), "mode": "exhaustive" if exhaustive else "adaptive",
             "measured": len(measured), "points": points, "steps": steps,
-            "findings": findings, "warnings": _dedupe(warnings)}
+            "findings": findings, "warnings": _dedupe(warnings),
+            "measurement_status": _combined_status(*(res for _, res in measured.values()))}
 
 
 _SIZE_RE = re.compile(r"^\s*([+]?)\s*([\d.]+)\s*(%|[kmg]i?b|b)?\s*$", re.IGNORECASE)
@@ -257,7 +263,8 @@ def _pick_target(good: dict, bad: dict, unit: str | None, metric: str | None):
 
 
 def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
-           unit: str | None = None, metric: str | None = None) -> dict:
+           unit: str | None = None, metric: str | None = None,
+           verify: bool = False) -> PublicResult:
     _require_ancestor(session.repo, good, bad)
     shas = git.first_parent_range(session.repo, good, bad)
     if len(shas) < 2:
@@ -275,11 +282,13 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
               or any(u["outcome"] != "passed" for u in r["units"].values())]
     if broken:
         return {**out, "status": "error",
+                "measurement_status": "error",
                 "warnings": _warnings(g_commit, g) + _warnings(b_commit, b),
                 "message": f"cannot measure {', '.join(broken)}; see warnings"}
     target = _pick_target(g, b, unit, metric)
     if target is None:
         return {**out, "status": "no_regression",
+                "measurement_status": "complete",
                 "message": "bad is not significantly worse than good for any unit/metric"}
     _, unit_name, metric_name = target
     key = blame.METRICS[metric_name][0]
@@ -308,49 +317,70 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
         )
     if bad_v <= limit:
         return {**out, "status": "no_regression",
+                "measurement_status": "complete",
                 "message": f"bad ({bad_v} B) does not exceed the threshold ({limit} B)"}
 
     measured = {0: (g_commit, g), len(shas) - 1: (b_commit, b)}
     skipped: set[int] = set()
     lo, hi = 0, len(shas) - 1
-    while True:
-        # Nearest-to-the-middle commit strictly between lo and hi that is not skipped.
-        order = sorted(range(lo + 1, hi), key=lambda i: abs(i - (lo + hi) / 2))
-        mid = next((i for i in order if i not in skipped), None)
-        if mid is None:
-            break
-        measured[mid] = session.result(shas[mid], f"step {len(measured) - 1} ")
-        v = value(measured[mid][1])
-        if v is None:
-            skipped.add(mid)
-        elif v > limit:
-            hi = mid
-        else:
-            lo = mid
+    if verify:
+        for i in range(1, len(shas) - 1):
+            measured[i] = session.result(shas[i], f"verify {i}/{len(shas) - 2} ")
+            if value(measured[i][1]) is None:
+                skipped.add(i)
+        hi = min(i for i in measured if value(measured[i][1]) is not None
+                 and value(measured[i][1]) > limit)
+        lo = max(i for i in measured if i < hi and value(measured[i][1]) is not None
+                 and value(measured[i][1]) <= limit)
+    else:
+        while True:
+            # Nearest-to-the-middle commit strictly between lo and hi that is not skipped.
+            order = sorted(range(lo + 1, hi), key=lambda i: abs(i - (lo + hi) / 2))
+            mid = next((i for i in order if i not in skipped), None)
+            if mid is None:
+                break
+            measured[mid] = session.result(shas[mid], f"step {len(measured) - 1} ")
+            v = value(measured[mid][1])
+            if v is None:
+                skipped.add(mid)
+            elif v > limit:
+                hi = mid
+            else:
+                lo = mid
     parent, culprit = measured[lo], measured[hi]
     trail = [{"commit": measured[i][0].to_json(), "value": value(measured[i][1]),
               "bad": (value(measured[i][1]) or 0) > limit, "skipped": i in skipped}
              for i in sorted(measured)]
-    between = [shas[i] for i in range(lo + 1, hi)]
+    between = [shas[i] for i in range(lo + 1, hi) if i in skipped or i not in measured]
     flags = [t["bad"] for t in trail if not t["skipped"]]
-    monotonic = flags == sorted(flags)  # all good commits come before all bad ones
+    monotonic = flags == sorted(flags) if verify else None
     cmp, parent, culprit = _compare(session, parent, culprit)
     out.update(
         status="found", culprit=culprit[0].to_json(), parent=parent[0].to_json(),
-        measurements=trail, steps=len(measured) - 2, monotonic=monotonic, **cmp,
+        measurements=trail, steps=len(measured) - 2, monotonic=monotonic,
+        verified=verify, **cmp,
     )
     out["warnings"] = []
+    if not verify:
+        out["warnings"].append(
+            "fast bisect assumes memory crosses the threshold only once; this is a threshold "
+            "crossing, not a guaranteed first crossing. Use `memblame bisect --verify` to "
+            "measure every candidate."
+        )
     if between:
         out["culprit_range"] = between + [culprit[0].sha]
         out["warnings"].append(
             f"{len(between)} commit(s) right before the culprit could not be measured (skipped); "
             f"the regression is in one of {len(between) + 1} commits ending at "
             f"{culprit[0].short}")
-    if not monotonic:
+    if monotonic is False:
         out["warnings"].append(
-            "memory is not monotonic in this range; the culprit is *a* transition past the "
-            "threshold, not necessarily the first. Run `memblame range` to see all commits."
+            "memory is not monotonic in this range; exhaustive verification found the earliest "
+            "measurable transition past the threshold."
         )
+    out["measurement_status"] = _combined_status(
+        *(res for _, res in measured.values()), skipped=bool(skipped)
+    )
     return out
 
 
@@ -371,6 +401,25 @@ def _brief(res: dict) -> dict:
                "top": _top(u)}
         for name, u in res["units"].items()
     }}
+
+
+def _result_status(res: dict) -> str:
+    """Shared completeness state for every public command result."""
+    units = res.get("units", {})
+    if res.get("error") or res.get("valid") is False or not units:
+        return "error"
+    if any(unit.get("outcome") != "passed" for unit in units.values()):
+        return "incomplete"
+    return "complete"
+
+
+def _combined_status(*results: dict, skipped: bool = False) -> str:
+    statuses = {_result_status(result) for result in results}
+    if "error" in statuses:
+        return "error"
+    if skipped or "incomplete" in statuses:
+        return "incomplete"
+    return "complete"
 
 
 def _top(unit: dict) -> list[dict]:

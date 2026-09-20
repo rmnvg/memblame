@@ -11,16 +11,24 @@ Working name: `memblame`. Change it any time.
 | 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
-| 5 VS Code extension | done; VSIX builds (~400 KB) | 15 node tests + 7-step integration test in real VS Code 1.131 |
+| 5 VS Code extension | done; VSIX builds (~400 KB) | 18 node tests + 7-step integration test in real VS Code 1.131 |
 | 6 Portable CI reports | done | Markdown + self-contained interactive HTML, all commands |
+| 7 Trust hardening (this pass) | done | cache inputs, shared status, bisect `--verify`, process groups, namespace check, typed contract, config precedence; sections 4 and 9 |
 
-Test suites: `pytest` (108 tests, ~130 s in the latest local macOS run),
-`ruff check src tests`, `cd vscode-ext && npm test` (15), `npm run test:integration`
-(7 steps in a real VS Code; set
+Test suites: `pytest` (122 tests, ~140 s, order-independent under pytest-randomly; also run
+in full on Python 3.9 and 3.14), `ruff check src tests`, `cd vscode-ext && npm test` (18),
+`npm run test:integration` (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
-CI (`.github/workflows/ci.yml`): Linux/macOS/Windows × Python 3.9/3.12/3.14 (all green,
-including Windows), extension unit tests + VSIX build, and the real-VS Code integration test
-under xvfb on Linux. Supported Pythons: 3.9–3.14.
+CI (`.github/workflows/ci.yml`) runs Linux/macOS/Windows × Python 3.9/3.12/3.14, the extension
+unit tests + VSIX build, and the real-VS Code integration test under xvfb on Linux. Supported
+Pythons: 3.9–3.14.
+
+**Windows status (one statement, so it cannot contradict itself):** the Python suite has
+run green on Windows CI for the commits before the trust-hardening pass. The process-tree code
+added in that pass (`taskkill /T`, `CREATE_NEW_PROCESS_GROUP`, portable pid checks in tests)
+has only been reviewed and unit-tested on POSIX; **its first Windows CI run is the acceptance
+test**. The extension has never been clicked through on Windows (interpreter selection, paths
+with spaces, cancellation): see section 12.
 
 ## 1. One-paragraph summary
 
@@ -124,18 +132,31 @@ validity or outcome), measure the midpoint and recurse. Cost is about log₂ N p
 blind spot: a change undone later within one unsplit segment (`--all` covers it).
 
 **Bisect.** It picks the unit and metric with the largest relative growth (or `--unit` /
-`--metric`) and a threshold (`200MB`, `+20MB`, `+10%`, default: the noise band). It
-binary-searches the first-parent chain and reports `monotonic: false` plus a warning if the
-measured points are not good…good,bad…bad.
+`--metric`) and a threshold (`200MB`, `+20MB`, `+10%`, default: the noise band). The default
+binary search finds *a* transition past the threshold and says so: it assumes memory crosses
+the threshold once, and reports `verified: false`, `monotonic: null` and a warning (its
+sampled points are ordered by construction, so they cannot prove the history is monotonic).
+`--verify` measures every candidate, then reports the *earliest* observed crossing with
+`verified: true` and a real `monotonic` flag. A threshold the good commit already exceeds is
+an error, not a result.
 
 **Cache.** `.memblame/cache/<sha>-<key>.json` (with a `.gitignore`), keyed by the settings,
 interpreter version + installed distributions, the engine's source (runner + measure),
-the schema, and the content of a `script:` file that lives outside the repo. Attribution
-is added to the cached entry when it is computed.
+the schema, the content of a `script:` file that lives outside the repo, and the **declared
+inputs**: `cache_env` (names of environment variables; their values are hashed, never stored)
+and `cache_inputs` (files or directories, hashed recursively). Attribution is added to the
+cached entry when it is computed. Writers use unique temp files + atomic replace, so a CLI
+and an editor run can share a cache directory.
+*Reproducibility boundary:* anything a workload reads that is neither in the commit nor
+declared (an undeclared env var, a downloaded dataset) cannot invalidate the cache; the
+README says so. Use `--no-cache` when in doubt.
 
-**Environment check.** After the run, any imported module whose top-level name is a project
-package (found in root, `src/` and the configured paths) but whose `__file__` is outside the
-checkout makes the result `invalid_environment` (never cached, no findings).
+**Environment check.** After the run, any imported module whose dotted name exists in the
+checkout (found by walking root, `src/` and the configured paths once each, skipping any
+virtualenv by its `pyvenv.cfg`), including modules of namespace packages without an
+`__init__.py`, but whose `__file__` is outside the checkout, makes the result
+`invalid_environment` (never cached, no findings). Matching is by exact module name, so a
+legitimately shared namespace does not reject its foreign members.
 
 **Robustness.** pytest always runs in-process, in file order, without coverage (`-n 0`,
 `-p no:randomly`, `--no-cov` when those plugins exist). A unit whose outcome differs between
@@ -145,7 +166,26 @@ skipped point (range) or skipped like `git bisect skip` (bisect). If only one si
 comparison has a peak snapshot, the other is treated as empty and the verdict notes that the
 deltas are upper bounds. Stale worktrees from killed runs are removed via a pid file.
 
-**Contract.** `--json` output has `"schema": 1`. Exit code 3 = significant increase found.
+**Processes.** Every run starts the runner in its own process group (POSIX session /
+`CREATE_NEW_PROCESS_GROUP` on Windows) with stdin closed and stdout/stderr redirected to
+files. memblame waits for the *runner*, never for pipe EOF: a descendant that outlives the
+run or escapes the group cannot delay a timeout or hang the command (measured: a 1 s timeout
+took 25 s, and could take forever, under `communicate()`). Timeouts, Ctrl-C and SIGTERM
+(the editor's cancel) terminate the whole group (TERM, then KILL); Windows uses
+`taskkill /T /F`. After a normal finish, leftover group members are killed (POSIX), so
+measurements neither leak processes nor skew the next run. A process that calls `setsid`
+deliberately is not tracked.
+
+**Retained memory** means what outlives the workload: a `call:` workload's return value
+(sync or async) and a script's own globals are released before it is sampled; caches, module
+state and leaks are not.
+
+**Contract.** `--json` output has `"schema": 1` and a shared `measurement_status`
+(`complete` | `incomplete` | `error`) that the terminal, Markdown, HTML and extension all use;
+an incomplete or error result never renders as "no significant change". The shape is
+declared in `src/memblame/contract.py` (validated before anything is printed) and mirrored in
+`vscode-ext/src/contract.ts` (validated at the extension boundary, including the schema
+version). Exit code 3 = significant increase found.
 Exit code 1 = error or incomplete measurement, including failed or skipped workloads, invalid
 environments and inconsistent repeated samples. Bisect may still succeed after skipping
 broken intermediate commits, but its endpoints must be measurable and passed.
@@ -212,8 +252,9 @@ vscode-ext/
    memory, however many traces exist.
 3. **numpy**: the assumption was wrong in our favour. numpy reports its buffers to
    tracemalloc (an 80 MB array shows as 80 MB). Other native libraries may not.
-4. **Windows worktrees**: not tested yet (no Windows machine). Code uses short temp paths,
-   pathlib, no shell. Still to verify.
+4. **Windows worktrees**: verified by Windows CI (short temp paths, pathlib, no shell,
+   case-insensitive path prefixes). Process-tree termination on Windows: see the Windows
+   status in section 0.
 5. **pytest overhead**: made irrelevant: tracing starts and stops inside
    `pytest_runtest_protocol`, so collection/import is never measured.
 6. **New: tracing cost depends on the frames actually captured**, not on `nframe`: 1 frame is
