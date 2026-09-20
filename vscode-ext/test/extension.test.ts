@@ -181,13 +181,13 @@ test("runMemblame reports a missing interpreter clearly", async () => {
   await assert.rejects(job.result, /could not start/);
 });
 
-test("runMemblame end-to-end with the bundled engine (skipped without python3)", async (t) => {
+test("runMemblame end-to-end with the bundled engine (skipped without a bundle)", async (t) => {
   const bundled = path.join(__dirname, "..", "..", "python");
   if (!fs.existsSync(path.join(bundled, "memblame", "cli.py"))) {
     t.skip("python bundle missing");
     return;
   }
-  const job = runMemblame({ python: "python3", repo: process.cwd(), args: ["diff", "--json", "-w", "call:nope:nope", "-C", "/"], bundledPath: bundled });
+  const job = runMemblame({ python, repo: process.cwd(), args: ["diff", "--json", "-w", "call:nope:nope", "-C", "/"], bundledPath: bundled });
   await assert.rejects(job.result, /not inside a git repository|exited with code/);
 });
 
@@ -251,4 +251,18 @@ test("repository config detection works for any key, only in MemBlame's table", 
   assert.equal(tomlDefinesKey('[tool.black]\npython = "x"\n', true, "python"), false);
   assert.equal(tomlDefinesKey('[project]\nname = "python"\n', true, "python"), false);
   assert.equal(tomlDefinesKey('pythonpath = ["src"]\n', false, "python"), false, "prefix of another key");
+});
+
+test("an incomplete range still shows its findings, under a banner, never as an all-clear", () => {
+  const range = fixture("range") as MemblameResult;
+  range.measurement_status = "incomplete";
+  range.incomplete_commits = 1;
+  const html = renderHtml(range, "N", "c");
+  assert.match(html, /Incomplete: 1 commit\(s\) could not be measured or did not pass/);
+  assert.match(html, /not an all-clear/);
+  assert.match(html, /load_rows\(\)/, "the regression between measured commits is still listed");
+  assert.doesNotMatch(html, /No significant memory changes/);
+  range.findings = [];
+  const none = renderHtml(range, "N", "c");
+  assert.match(none, /Measurement incomplete; no memory-regression conclusion/);
 });

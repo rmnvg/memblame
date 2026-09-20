@@ -129,6 +129,7 @@ export interface MemblameResult {
   points?: Point[];
   mode?: "adaptive" | "exhaustive";
   measured?: number;
+  incomplete_commits?: number;
   status?: "found" | "no_regression" | "error";
   message?: string;
   culprit?: Commit;

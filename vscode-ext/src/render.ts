@@ -248,7 +248,13 @@ function renderRange(d: MemblameResult): string {
       );
     })
     .join("");
-  const summary = d.measurement_status && d.measurement_status !== "complete"
+  const incomplete = !!d.measurement_status && d.measurement_status !== "complete";
+  const cards = findings.map((f) => findingCard(f, points[f.commit ? bySha.get(f.commit) ?? 0 : 0]?.commit)).join("");
+  const n = d.incomplete_commits ?? 0;
+  const summary = incomplete && findings.length
+    ? `<h2>Findings</h2><p class="big bad">Incomplete: ${n ? `${n} commit(s)` : "some commits"} could not be measured or did not pass. ` +
+      `These findings are between measured commits; more may hide in the gaps, so this is not an all-clear.</p>${cards}`
+    : incomplete
     ? `<h2>Findings</h2><p class="big bad">Measurement incomplete; no memory-regression conclusion.</p>`
     : findings.length
     ? `<h2>Findings</h2>${findings.map((f) => findingCard(f, points[f.commit ? bySha.get(f.commit) ?? 0 : 0]?.commit)).join("")}`
