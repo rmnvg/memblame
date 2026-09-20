@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 from collections.abc import Callable
@@ -237,12 +238,30 @@ _MULT = {"b": 1, "kb": 10**3, "mb": 10**6, "gb": 10**9, "kib": 2**10, "mib": 2**
          "gib": 2**30}
 
 
+def _split_threshold(text: str) -> tuple[str, float, str]:
+    """Syntax of a threshold, without the good commit's value: (plus, number, unit).
+
+    The regex accepts any run of digits and dots, so "1.2.3MB" reaches float() and must be
+    rejected here rather than escaping as a bare "could not convert string to float".
+    """
+    m = _SIZE_RE.match(text)
+    try:
+        num = float(m.group(2)) if m else None
+    except ValueError:
+        num = None
+    if m is None or num is None or not math.isfinite(num):
+        raise ValueError(f"bad threshold {text!r}; examples: 200MB, +20MB, +10%")
+    return m.group(1), num, (m.group(3) or "b").lower()
+
+
+def check_threshold(text: str) -> None:
+    """Validate a threshold's syntax before anything is measured, so a typo fails at once."""
+    _split_threshold(text)
+
+
 def parse_threshold(text: str, good_value: int) -> int:
     """'200MB' (absolute), '+20MB' or '+10%' (relative to the good commit)."""
-    m = _SIZE_RE.match(text)
-    if not m:
-        raise ValueError(f"bad threshold {text!r}; examples: 200MB, +20MB, +10%")
-    plus, num, unit = m.group(1), float(m.group(2)), (m.group(3) or "b").lower()
+    plus, num, unit = _split_threshold(text)
     if unit == "%":
         return int(good_value * (1 + num / 100))
     value = int(num * _MULT[unit])

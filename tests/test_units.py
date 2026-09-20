@@ -192,9 +192,18 @@ def test_parse_threshold(text, good, expected):
     assert api.parse_threshold(text, good) == expected
 
 
-def test_parse_threshold_rejects_garbage():
-    with pytest.raises(ValueError):
-        api.parse_threshold("lots", 0)
+@pytest.mark.parametrize("text", ["lots", "", "1.2.3MB", ".", "-5MB", "1e3", "nanMB", "infGB"])
+def test_parse_threshold_rejects_garbage(text):
+    """Every rejection must name the input and show an example, never leak a float() error."""
+    with pytest.raises(ValueError, match="bad threshold"):
+        api.parse_threshold(text, 0)
+    with pytest.raises(ValueError, match="bad threshold"):
+        api.check_threshold(text)
+
+
+def test_check_threshold_accepts_what_parse_threshold_accepts():
+    for text in ("200MB", "+20MB", "+10%", "1GiB", "123"):
+        api.check_threshold(text)  # no exception
 
 
 def test_property_getter_and_setter_share_one_range(tmp_path):
