@@ -87,6 +87,9 @@ export function activate(ctx: vscode.ExtensionContext): MemBlameApi {
     if (!head) {
       return;
     }
+    if (head === "WORKTREE" && !(await saveOrContinue())) {
+      return;
+    }
     await runCommand(bundled, head === "WORKTREE" ? ["diff", base] : ["diff", base, head]);
   });
   cmd("memblame.analyzeRange", async (rangeArg?: string) => {
@@ -256,14 +259,14 @@ async function repoRoot(forFile?: vscode.Uri): Promise<string | undefined> {
   );
 }
 
-/** The engine measures files on disk: offer to save unsaved Python edits first. */
+/** The engine measures files on disk: offer to save unsaved edits first. */
 async function saveOrContinue(): Promise<boolean> {
-  const dirty = vscode.workspace.textDocuments.filter((d) => d.isDirty && d.languageId === "python");
+  const dirty = vscode.workspace.textDocuments.filter((d) => d.isDirty && d.uri.scheme === "file");
   if (!dirty.length) {
     return true;
   }
   const choice = await vscode.window.showWarningMessage(
-    `MemBlame measures the files on disk; ${dirty.length} Python file(s) have unsaved changes.`,
+    `MemBlame measures the files on disk; ${dirty.length} file(s) have unsaved changes.`,
     "Save All and Continue",
     "Continue Without Saving",
   );

@@ -524,9 +524,10 @@ class Cache:
             return None
         p = self._path(sha)
         try:
-            return json.loads(p.read_text())
+            result = json.loads(p.read_text())
         except (OSError, ValueError):
             return None
+        return result if _valid_cached_result(result) else None
 
     def put(self, sha: str, result: dict) -> None:
         """Best-effort atomic write: a cache problem must never lose a finished measurement."""
@@ -569,3 +570,41 @@ def _replace_with_retry(source: Path, target: Path, attempts: int = 20) -> None:
             if os.name != "nt" or attempt == attempts - 1:
                 raise
             time.sleep(0.01 * (attempt + 1))
+
+
+def _valid_cached_result(result: object) -> bool:
+    """A damaged cache entry is a miss, never a reason for an analysis to crash."""
+    if not isinstance(result, dict) or result.get("schema") != SCHEMA:
+        return False
+    if result.get("valid") is not True or not isinstance(result.get("attributed"), bool):
+        return False
+    if not all(isinstance(result.get(key), str) for key in ("python", "executable", "platform")):
+        return False
+    if not all(isinstance(result.get(key), int) for key in ("runs", "nframe")):
+        return False
+    if not isinstance(result.get("functions"), dict):
+        return False
+    if not all(isinstance(result.get(key), list) for key in ("warnings", "env_problems")):
+        return False
+    units = result.get("units")
+    if not isinstance(units, dict) or not units:
+        return False
+    for name, unit in units.items():
+        if not isinstance(name, str) or not isinstance(unit, dict):
+            return False
+        if not isinstance(unit.get("outcome"), str):
+            return False
+        if any(unit.get(key) is not None and not isinstance(unit.get(key), dict)
+               for key in ("at_peak", "retained")):
+            return False
+        if not all(key in unit for key in ("at_peak", "retained")):
+            return False
+        for stat_name in ("peak", "end"):
+            stat = unit.get(stat_name)
+            if not isinstance(stat, dict):
+                return False
+            if not all(isinstance(stat.get(key), int) for key in ("median", "min", "max")):
+                return False
+            if not isinstance(stat.get("samples"), list):
+                return False
+    return True
