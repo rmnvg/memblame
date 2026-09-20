@@ -8,3 +8,5 @@ tsconfig.json
 node_modules/**
 **/__pycache__/**
 .vscode-test/**
+# README images load from raw.githubusercontent.com; only the icon must ship
+media/report-*.png

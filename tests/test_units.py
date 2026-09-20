@@ -239,3 +239,15 @@ def test_project_module_scan_skips_virtualenvs_and_duplicate_directories(tmp_pat
     names = _project_modules([str(tmp_path), str(tmp_path), str(tmp_path / ".")])
     assert {"pkg", "pkg.mod"} <= names
     assert not any(n.startswith("customenv") for n in names)
+
+
+def test_extension_version_matches_package():
+    """The VSIX bundles this engine, so the two version strings must not drift."""
+    import json
+
+    import memblame
+
+    manifest = Path(__file__).parent.parent / "vscode-ext" / "package.json"
+    if not manifest.exists():  # the sdist ships tests but not the extension
+        pytest.skip("vscode-ext/package.json not present")
+    assert json.loads(manifest.read_text(encoding="utf-8"))["version"] == memblame.__version__

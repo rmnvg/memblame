@@ -4,15 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memblame"
-version = "0.1.0"
 description = "git blame for memory: find the commit and function that made your Python code use more memory"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 dependencies = []
+dynamic = ["version"]
 keywords = ["memory", "profiling", "tracemalloc", "regression", "git", "bisect", "pytest"]
 classifiers = [
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Debuggers",
   "Topic :: Software Development :: Testing",
   "Development Status :: 3 - Alpha",
@@ -26,6 +32,9 @@ Issues = "https://github.com/rmnvg/memblame/issues"
 
 [project.scripts]
 memblame = "memblame.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "memblame.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
