@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
 import sys
@@ -51,7 +52,11 @@ def load_config(repo: Path) -> dict:
             print(f"memblame: ignoring {name}: {exc}", file=sys.stderr)
             continue
         for key in table or ():
+            if not isinstance(data, dict):
+                raise ValueError(f"config in {name}: {'.'.join(table)} must be a table")
             data = data.get(key, {})
+        if not isinstance(data, dict):
+            raise ValueError(f"config in {name}: {'.'.join(table or ())} must be a table")
         if data:
             unknown = sorted(set(data) - CONFIG_KEYS)
             if unknown:
@@ -133,6 +138,8 @@ def _check_types(config: dict) -> None:
             raise ValueError(f"config key {key!r} must be {names}, got {value!r}")
         if key in ("runs", "nframe") and value < 1:
             raise ValueError(f"config key {key!r} must be at least 1, got {value!r}")
+        if key == "timeout" and (not math.isfinite(value) or value <= 0):
+            raise ValueError(f"config key 'timeout' must be positive and finite, got {value!r}")
         if key in ("pythonpath", "cache_env", "cache_inputs") and isinstance(value, list):
             if not all(isinstance(item, str) for item in value):
                 raise ValueError(f"config key {key!r} must contain only strings, got {value!r}")
@@ -149,6 +156,7 @@ def _interpreter(value: str | None, base: Path) -> str | None:
 
 def settings_from(args: argparse.Namespace, config: dict, repo: Path | None = None,
                   ) -> Settings:
+    _check_types(config)
     workload = args.workload or config.get("workload")
     if not workload:
         raise ValueError(
@@ -157,7 +165,6 @@ def settings_from(args: argparse.Namespace, config: dict, repo: Path | None = No
         )
     if workload.partition(":")[0] not in ("pytest", "script", "call"):
         raise ValueError(f"bad workload {workload!r}: must start with pytest:, script: or call:")
-    _check_types(config)
     pythonpath = args.pythonpath or config.get("pythonpath")
     if isinstance(pythonpath, str):
         pythonpath = [pythonpath]
@@ -170,8 +177,8 @@ def settings_from(args: argparse.Namespace, config: dict, repo: Path | None = No
         cache_inputs = [cache_inputs]
     for flag in ("runs", "nframe", "timeout"):
         value = getattr(args, flag)
-        if value is not None and value <= 0:
-            raise ValueError(f"--{flag} must be positive, got {value}")
+        if value is not None and (value <= 0 or (flag == "timeout" and not math.isfinite(value))):
+            raise ValueError(f"--{flag} must be positive and finite, got {value}")
     return Settings(
         workload=workload,
         runs=args.runs or config.get("runs", 3),
@@ -198,11 +205,11 @@ def main(argv: list[str] | None = None) -> int:
     _exit_on_sigterm()
     try:
         repo = git.repo_root(Path(args.repo))
-    except git.GitError:
+    except (git.GitError, OSError):
         print(f"memblame: {args.repo} is not inside a git repository", file=sys.stderr)
         return 2
-    config = load_config(repo)
     try:
+        config = load_config(repo)
         settings = settings_from(args, config, repo)
         with api.Session(repo, settings, use_cache=not args.no_cache) as s:
             if args.command == "run":
@@ -220,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
                 out = api.bisect(s, args.good, args.bad, threshold, args.unit, args.metric,
                                  verify=args.verify)
                 fmt = report.format_bisect
-    except (git.GitError, MeasureError, ValueError, RuntimeError) as exc:
+    except (git.GitError, MeasureError, ValueError, RuntimeError, OSError) as exc:
         if args.json:
             print(json.dumps({"schema": 1, "kind": "error", "error": str(exc)}))
         print(f"memblame: error: {exc}", file=sys.stderr)
@@ -252,6 +259,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def _has_measurement_failure(out: dict) -> bool:
     """A missing/failed measurement must not look like a successful regression check."""
+    # A found bisect result can contain skipped intermediate commits. Its passing
+    # endpoints still establish a regression, with uncertainty recorded in the report.
+    if out.get("kind") == "bisect" and out.get("status") == "found":
+        return False
     if "measurement_status" in out:
         return out["measurement_status"] != "complete"
 

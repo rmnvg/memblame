@@ -497,3 +497,17 @@ def test_two_failing_runs_are_not_compared_as_memory_data(tmp_path):
         out = api.range_(s, "HEAD~1", "HEAD", exhaustive=True)
     assert out["findings"] == []
     assert out["measurement_status"] == "incomplete"
+
+
+@pytest.mark.parametrize("noprefix", [False, True])
+def test_diff_paths_survive_git_quoting_and_prefix_config(tmp_path, noprefix):
+    repo = Repo(tmp_path / "repo")
+    names = ["a/normal.py", "b/space name.py", "café.py"]
+    if os.name != "nt":
+        names += ['quote"name.py', 'tab\tname.py', 'back\\slash.py', 'café".py']
+    repo.commit({name: "x = 1\n" for name in names}, "before")
+    repo.commit({name: "x = 2\n" for name in names}, "after")
+    repo.git("config", "diff.noprefix", str(noprefix).lower())
+    hunks = git.diff_hunks(repo.path, "HEAD~1", "HEAD")
+    assert {h.file for h in hunks} == set(names)
+    assert {h.old_file for h in hunks} == set(names)

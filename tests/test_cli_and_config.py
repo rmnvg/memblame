@@ -414,3 +414,60 @@ def test_missing_pytest_is_a_setup_error_not_a_skipped_commit(tmp_path, capsys):
     with pytest.raises(api.MeasureError, match="pytest is not installed"):
         with session(r, "pytest:tests/test_a.py", extra_env={"PYTHONPATH": str(shadow)}) as s:
             api.run(s, "HEAD")
+
+
+@pytest.mark.parametrize("config,message", [
+    ('workload = 42', "config key 'workload' must be str"),
+    ('workload = "call:a:b"\ntimeout = -1', "positive and finite"),
+    ('workload = "call:a:b"\ntimeout = 0', "positive and finite"),
+    ('workload = "call:a:b"\ntimeout = nan', "positive and finite"),
+    ('workload = "call:a:b"\ntimeout = inf', "positive and finite"),
+])
+def test_invalid_config_returns_structured_error(tmp_path, capsys, config, message):
+    pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
+    repo = Repo(tmp_path / "repo")
+    repo.write({"memblame.toml": config})
+    code, out, err = run_cli(capsys, "run", "-C", str(repo.path), "--json")
+    assert code == 1 and message in err
+    assert json.loads(out)["kind"] == "error"
+
+
+@pytest.mark.parametrize("config", ['tool = 42', '[tool]\nmemblame = "invalid"'])
+def test_config_table_shape_returns_structured_error(tmp_path, capsys, config):
+    pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
+    repo = Repo(tmp_path / "repo")
+    repo.write({"pyproject.toml": config})
+    code, out, err = run_cli(capsys, "run", "-C", str(repo.path), "--json")
+    assert code == 1 and "must be a table" in err
+    assert json.loads(out)["kind"] == "error"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_invalid_timeout_flag_returns_structured_error(tmp_path, capsys, value):
+    repo = Repo(tmp_path / "repo")
+    code, out, err = run_cli(capsys, "run", "-C", str(repo.path), "--json",
+                           "-w", "call:a:b", f"--timeout={value}")
+    assert code == 1 and "--timeout must be positive and finite" in err
+    assert json.loads(out)["kind"] == "error"
+
+
+def test_missing_repository_returns_repository_error(tmp_path, capsys):
+    code, _, err = run_cli(capsys, "run", "-C", str(tmp_path / "missing"))
+    assert code == 2 and "not inside a git repository" in err
+
+
+@pytest.mark.parametrize("broken", ["raise ValueError('broken')\n", "import os\nos._exit(7)\n"])
+def test_bisect_found_across_broken_commit_returns_regression(tmp_path, capsys, broken):
+    repo = Repo(tmp_path / "repo")
+    repo.commit({"bench.py": "x = bytearray(100_000)\n"}, "good")
+    skipped = repo.commit({"bench.py": broken}, "broken")
+    repo.commit({"bench.py": "x = bytearray(2_000_000)\n"}, "bad")
+    code, out, _ = run_cli(capsys, "bisect", "--good", "HEAD~2", "--metric", "peak",
+                           "--threshold", "+1MB", "-C", str(repo.path), "--json",
+                           "-w", "script:bench.py", "--python", sys.executable,
+                           "--runs", "1", "--no-cache")
+    result = json.loads(out)
+    assert result["status"] == "found"
+    assert skipped in result["culprit_range"]
+    assert result["measurement_status"] != "complete"
+    assert code == 3
