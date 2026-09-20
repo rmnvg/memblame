@@ -41,7 +41,11 @@ jobs:
           PYTHONUTF8: "1"
 
   extension:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: vscode-ext
@@ -57,13 +61,22 @@ jobs:
       - run: npm test
       - run: npx vsce package --no-dependencies
       - uses: actions/upload-artifact@v5
+        if: runner.os == 'Linux'
         with:
           name: vsix
           path: vscode-ext/*.vsix
 
   extension-integration:
-    # Launches a real VS Code (headless via xvfb) against a generated fixture repo.
-    runs-on: ubuntu-latest
+    # Launches a real VS Code against a generated fixture repo: headless via xvfb on Linux,
+    # directly on Windows (the only place the extension is exercised on Windows).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -78,7 +91,15 @@ jobs:
         working-directory: vscode-ext
       - run: npm run compile
         working-directory: vscode-ext
-      - run: xvfb-run -a node out/test/integration/runTest.js
+      - name: Integration test (Linux, under xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node out/test/integration/runTest.js
+        working-directory: vscode-ext
+        env:
+          MEMBLAME_TEST_PYTHON: python
+      - name: Integration test (Windows)
+        if: runner.os == 'Windows'
+        run: node out/test/integration/runTest.js
         working-directory: vscode-ext
         env:
           MEMBLAME_TEST_PYTHON: python
