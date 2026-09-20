@@ -62,6 +62,7 @@ class PublicResult(TypedDict, total=False):
     results: dict[str, Any]
     units: Any
     points: list[dict[str, Any]]
+    incomplete_commits: int
     status: str
     message: str
     culprit: CommitJSON

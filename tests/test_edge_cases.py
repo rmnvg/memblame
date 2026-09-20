@@ -3,6 +3,7 @@ measurements or produce misleading findings."""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -452,3 +453,45 @@ def test_workload_cannot_block_on_stdin_or_a_full_output_pipe(tmp_path):
         _, result = s.result("HEAD")
     assert time.time() - started < 25
     assert result["units"]["workload"]["outcome"] == "passed"
+
+
+def _broken_middle_range(tmp_path):
+    r = Repo(tmp_path / "repo")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": SMALL}, "small")
+    r.commit({"pkg/a.py": BIG}, "grows")
+    r.commit({"pkg/a.py": "def run():\n    raise RuntimeError('wip')\n"}, "broken")
+    r.commit({"pkg/a.py": BIG + "\n"}, "fixed")
+    return r
+
+
+def test_range_keeps_real_findings_next_to_a_broken_commit(tmp_path, capsys):
+    """One unmeasurable old commit must not hide a regression found between measured ones,
+    and must never read as an all-clear."""
+    from memblame import artifact, cli, report
+
+    r = _broken_middle_range(tmp_path)
+    args = ["range", "HEAD~3..HEAD", "--all", "-C", str(r.path), "-w", "call:pkg.a:run",
+            "--python", sys.executable, "--runs", "1", "--no-cache"]
+    code = cli.main(args + ["--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 1  # incomplete: CI must not treat it as a pass...
+    assert out["measurement_status"] == "incomplete" and out["incomplete_commits"] == 1
+    assert [f["verdict"]["function"] for f in out["findings"]] == ["pkg/a.py::run"]
+    text, md, html = report.format_range(out), artifact.markdown(out), artifact.html_report(out)
+    for rendered in (text, md, html):
+        assert "1 commit(s) could not be measured or did not pass" in rendered
+        assert "not an all-clear" in rendered
+        assert "pkg/a.py" in rendered  # ...and the regression is still shown
+        assert "No significant memory changes" not in rendered
+
+
+def test_two_failing_runs_are_not_compared_as_memory_data(tmp_path):
+    r = Repo(tmp_path / "repo")
+    body = ("def run():\n    keep = [bytes(100) for _ in range({n})]\n"
+            "    raise ValueError(len(keep))\n")
+    r.commit({"pkg/__init__.py": "", "pkg/a.py": body.format(n=1000)}, "fails early")
+    r.commit({"pkg/a.py": body.format(n=100_000)}, "fails later, after allocating more")
+    with session(r, "call:pkg.a:run") as s:
+        out = api.range_(s, "HEAD~1", "HEAD", exhaustive=True)
+    assert out["findings"] == []
+    assert out["measurement_status"] == "incomplete"

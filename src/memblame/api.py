@@ -204,8 +204,11 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
             continue
         cmp, a, b = _compare(session, a, b)
         measured[lo], measured[hi] = a, b
+        # Only units that passed on both sides carry a memory signal; two crashes do not.
+        findings = [f for f in cmp["findings"]
+                    if _unit_passed(a[1], f["unit"]) and _unit_passed(b[1], f["unit"])]
         steps.append({"base": a[0].sha, "head": b[0].sha, "commits": hi - lo,
-                      "findings": cmp["findings"]})
+                      "findings": findings})
     commits = git.commit_infos(session.repo, shas)
     points, warnings = [], []
     for i, commit in enumerate(commits):
@@ -223,6 +226,8 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
     findings.sort(key=lambda f: -abs(f["delta"]))
     return {**session.header("range"), "mode": "exhaustive" if exhaustive else "adaptive",
             "measured": len(measured), "points": points, "steps": steps,
+            "incomplete_commits": sum(1 for _, res in measured.values()
+                                      if _result_status(res) != "complete"),
             "findings": findings, "warnings": _dedupe(warnings),
             "measurement_status": _combined_status(*(res for _, res in measured.values()))}
 
@@ -401,6 +406,10 @@ def _brief(res: dict) -> dict:
                "top": _top(u)}
         for name, u in res["units"].items()
     }}
+
+
+def _unit_passed(res: dict, unit: str) -> bool:
+    return res.get("units", {}).get(unit, {}).get("outcome") == "passed"
 
 
 def _result_status(res: dict) -> str:

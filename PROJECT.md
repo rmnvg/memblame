@@ -11,12 +11,12 @@ Working name: `memblame`. Change it any time.
 | 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
-| 5 VS Code extension | done; VSIX builds (~400 KB) | 18 node tests + 7-step integration test in real VS Code 1.131 |
+| 5 VS Code extension | done; VSIX builds (~400 KB) | 19 node tests + 7-step integration test in real VS Code 1.131 |
 | 6 Portable CI reports | done | Markdown + self-contained interactive HTML, all commands |
 | 7 Trust hardening (this pass) | done | cache inputs, shared status, bisect `--verify`, process groups, namespace check, typed contract, config precedence; sections 4 and 9 |
 
-Test suites: `pytest` (122 tests, ~140 s, order-independent under pytest-randomly; also run
-in full on Python 3.9 and 3.14), `ruff check src tests`, `cd vscode-ext && npm test` (18),
+Test suites: `pytest` (124 tests, ~150 s, order-independent under pytest-randomly; also run
+in full on Python 3.9 and 3.14), `ruff check src tests`, `cd vscode-ext && npm test` (19),
 `npm run test:integration` (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
 CI (`.github/workflows/ci.yml`) runs Linux/macOS/Windows × Python 3.9/3.12/3.14, the extension
@@ -165,6 +165,9 @@ pytest units make the overall check incomplete. A commit that crashes or times o
 skipped point (range) or skipped like `git bisect skip` (bisect). If only one side of a
 comparison has a peak snapshot, the other is treated as empty and the verdict notes that the
 deltas are upper bounds. Stale worktrees from killed runs are removed via a pid file.
+A `range` with an unmeasurable or failing commit keeps the findings between commit pairs
+that both passed (a pair where either side failed is never compared as memory data), shows
+them under an "incomplete" banner with the count in `incomplete_commits`, and still exits 1.
 
 **Processes.** Every run starts the runner in its own process group (POSIX session /
 `CREATE_NEW_PROCESS_GROUP` on Windows) with stdin closed and stdout/stderr redirected to

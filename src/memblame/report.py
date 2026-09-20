@@ -156,9 +156,19 @@ def format_range(d: dict) -> str:
         out.append(f"({len(units) - len(interesting[:3])} other units without findings)")
     if d.get("measurement_status", "complete") == "complete":
         out += _findings(d["findings"], points)
+    elif d["findings"]:
+        out.append(f"INCOMPLETE: {_incomplete_note(d)}")
+        out += _findings(d["findings"], points)
     else:
         out.append("Measurement incomplete; no memory-regression conclusion.")
     return "\n".join(out + _warnings(d))
+
+
+def _incomplete_note(d: dict) -> str:
+    n = d.get("incomplete_commits", 0)
+    which = f"{n} commit(s)" if n else "some commits"
+    return (f"{which} could not be measured or did not pass. The findings below are between "
+            "commits that were measured; more may hide in the gaps, so this is not an all-clear.")
 
 
 def _findings(findings: list[dict], points: list[dict]) -> list[str]:

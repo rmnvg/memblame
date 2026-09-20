@@ -63,13 +63,25 @@ def _warnings_md(data: dict) -> list[str]:
     return out
 
 
-def _incomplete_md(data: dict) -> list[str]:
+def _incomplete_text(data: dict) -> str | None:
+    """One sentence for both formats; None when the measurement is complete."""
     status = data.get("measurement_status", "complete")
     if status == "complete":
-        return []
+        return None
+    if data.get("kind") == "range" and data.get("findings"):
+        n = data.get("incomplete_commits", 0)
+        which = f"{n} commit(s)" if n else "some commits"
+        return (f"Measurement incomplete: {which} could not be measured or did not pass. The "
+                "findings below are between commits that were measured; more may hide in the "
+                "gaps, so this is not an all-clear.")
     detail = ("Measurement unavailable" if status == "error"
               else "Measurement incomplete because one or more workloads did not pass")
-    return ["", f"**{detail}; no memory-regression conclusion can be made.**"]
+    return f"{detail}; no memory-regression conclusion can be made."
+
+
+def _incomplete_md(data: dict) -> list[str]:
+    text = _incomplete_text(data)
+    return [] if text is None else ["", f"**{text}**"]
 
 
 def _verdict_md(verdict: dict) -> list[str]:
@@ -201,7 +213,7 @@ def _range_md(data: dict) -> list[str]:
     commits = {p.get("commit", {}).get("sha"): p.get("commit") for p in points}
     out = ["", f"**Measured {data.get('measured', len(points))} of {len(points)} commits "
            f"in {data.get('mode', 'unknown')} mode.**", *_incomplete_md(data)]
-    if data.get("measurement_status", "complete") != "complete":
+    if data.get("measurement_status", "complete") != "complete" and not findings:
         out += ["", "## Findings", "", "No conclusion because the measurement is incomplete."]
     elif findings:
         out += ["", f"## Findings ({len(findings)})"]
@@ -253,12 +265,8 @@ def _h(text: object) -> str:
 
 
 def _status_html(data: dict) -> str:
-    status = data.get("measurement_status", "complete")
-    if status == "complete":
-        return ""
-    detail = ("Measurement unavailable" if status == "error"
-              else "Measurement incomplete because one or more workloads did not pass")
-    return f'<p class="status bad">{_h(detail)}; no memory-regression conclusion.</p>'
+    text = _incomplete_text(data)
+    return "" if text is None else f'<p class="status bad">{_h(text)}</p>'
 
 
 def _commit_html(c: dict | None) -> str:
@@ -490,7 +498,7 @@ def _range_html(data: dict) -> str:
     )
     cards = "".join(_finding_html(f, commits.get(f.get("commit"))) for f in findings)
     if data.get("measurement_status", "complete") != "complete":
-        cards = _status_html(data)
+        cards = _status_html(data) + cards
     elif not cards:
         cards = '<p class="status good">No significant memory changes.</p>'
     rows = []

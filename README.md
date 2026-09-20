@@ -184,7 +184,9 @@ says so and uses the command line only.
   adds `-n 0` (pytest-xdist), `-p no:randomly` and `--no-cov` (pytest-cov) when those
   plugins are installed.
 * A commit where the workload fails, skips, or cannot be measured (crash, timeout) makes the
-  check incomplete, never a successful memory check. `bisect` can skip broken intermediate
+  check incomplete (exit code 1), never a successful memory check. A `range` still lists the
+  findings between commits that *were* measured and passed, under an "incomplete" banner: more
+  may hide in the gaps, so it is not an all-clear. Two failing runs are never compared. `bisect` can skip broken intermediate
   commits the way `git bisect skip` does, but its endpoints must pass.
 * Each run gets its own process group and a closed stdin. On a timeout, or when you cancel
   from the editor or with Ctrl-C, the whole process tree the workload started is terminated,
