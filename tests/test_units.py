@@ -192,9 +192,48 @@ def test_parse_threshold(text, good, expected):
     assert api.parse_threshold(text, good) == expected
 
 
-def test_parse_threshold_rejects_garbage():
-    with pytest.raises(ValueError):
-        api.parse_threshold("lots", 0)
+@pytest.mark.parametrize("text", ["lots", "", "1.2.3MB", ".", "-5MB", "1e3", "nanMB", "infGB"])
+def test_parse_threshold_rejects_garbage(text):
+    """Every rejection must name the input and show an example, never leak a float() error."""
+    with pytest.raises(ValueError, match="bad threshold"):
+        api.parse_threshold(text, 0)
+    with pytest.raises(ValueError, match="bad threshold"):
+        api.check_threshold(text)
+
+
+def test_check_threshold_accepts_what_parse_threshold_accepts():
+    for text in ("200MB", "+20MB", "+10%", "1GiB", "123"):
+        api.check_threshold(text)  # no exception
+
+
+def _bisect_result(values):
+    def stats(value):
+        return {"median": value, "min": value, "max": value, "samples": [value]}
+
+    return {"units": {
+        name: {"peak": stats(peak), "end": stats(retained), "outcome": "passed"}
+        for name, (peak, retained) in values.items()
+    }}
+
+
+def test_explicit_bisect_threshold_selects_the_unit_that_crosses_it():
+    good = _bisect_result({"large-relative": (100_000_000, 1_000_000),
+                           "crosses": (190_000_000, 1_000_000)})
+    bad = _bisect_result({"large-relative": (150_000_000, 1_000_000),
+                          "crosses": (210_000_000, 1_000_000)})
+
+    target = api._pick_target(good, bad, None, "peak", "200MB")
+
+    assert target[1:] == ("crosses", "peak", 200_000_000)
+
+
+def test_explicit_bisect_threshold_can_be_smaller_than_the_noise_band():
+    good = _bisect_result({"workload": (100_000, 10_000)})
+    bad = _bisect_result({"workload": (110_000, 10_000)})
+
+    target = api._pick_target(good, bad, "workload", "peak", "+1KB")
+
+    assert target[1:] == ("workload", "peak", 101_000)
 
 
 def test_property_getter_and_setter_share_one_range(tmp_path):

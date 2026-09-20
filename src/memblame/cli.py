@@ -211,6 +211,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(repo)
         settings = settings_from(args, config, repo)
+        threshold = None
+        if args.command == "bisect":
+            threshold = args.threshold or config.get("threshold")
+            if threshold:
+                # Before the session: a typo must not cost two full endpoint measurements.
+                api.check_threshold(threshold)
         with api.Session(repo, settings, use_cache=not args.no_cache) as s:
             if args.command == "run":
                 out, fmt = api.run(s, args.rev), report.format_run
@@ -223,7 +229,6 @@ def main(argv: list[str] | None = None) -> int:
                 out = api.range_(s, base, head or "HEAD", exhaustive=args.all)
                 fmt = report.format_range
             else:
-                threshold = args.threshold or config.get("threshold")
                 out = api.bisect(s, args.good, args.bad, threshold, args.unit, args.metric,
                                  verify=args.verify)
                 fmt = report.format_bisect

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 from collections.abc import Callable
@@ -132,7 +133,7 @@ def diff(session: Session, base: str, head: str = git.WORKTREE) -> PublicResult:
     if head == git.WORKTREE and not git.is_dirty(session.repo):
         # Nothing uncommitted: measuring the same code twice would only double the wait.
         head = "HEAD"
-        notes.append("working tree has no uncommitted Python changes; compared HEAD with itself"
+        notes.append("working tree has no uncommitted changes; compared HEAD with itself"
                      if git.resolve(session.repo, base) == git.resolve(session.repo, "HEAD")
                      else "working tree is clean; measured HEAD instead")
     a = session.result(base, "[1/2] ")
@@ -237,20 +238,46 @@ _MULT = {"b": 1, "kb": 10**3, "mb": 10**6, "gb": 10**9, "kib": 2**10, "mib": 2**
          "gib": 2**30}
 
 
+def _split_threshold(text: str) -> tuple[str, float, str]:
+    """Syntax of a threshold, without the good commit's value: (plus, number, unit).
+
+    The regex accepts any run of digits and dots, so "1.2.3MB" reaches float() and must be
+    rejected here rather than escaping as a bare "could not convert string to float".
+    """
+    m = _SIZE_RE.match(text)
+    try:
+        num = float(m.group(2)) if m else None
+    except ValueError:
+        num = None
+    if m is None or num is None or not math.isfinite(num):
+        raise ValueError(f"bad threshold {text!r}; examples: 200MB, +20MB, +10%")
+    return m.group(1), num, (m.group(3) or "b").lower()
+
+
+def check_threshold(text: str) -> None:
+    """Validate a threshold's syntax before anything is measured, so a typo fails at once."""
+    _split_threshold(text)
+
+
 def parse_threshold(text: str, good_value: int) -> int:
     """'200MB' (absolute), '+20MB' or '+10%' (relative to the good commit)."""
-    m = _SIZE_RE.match(text)
-    if not m:
-        raise ValueError(f"bad threshold {text!r}; examples: 200MB, +20MB, +10%")
-    plus, num, unit = m.group(1), float(m.group(2)), (m.group(3) or "b").lower()
+    plus, num, unit = _split_threshold(text)
     if unit == "%":
         return int(good_value * (1 + num / 100))
     value = int(num * _MULT[unit])
     return good_value + value if plus else value
 
 
-def _pick_target(good: dict, bad: dict, unit: str | None, metric: str | None):
+def _pick_target(good: dict, bad: dict, unit: str | None, metric: str | None,
+                 threshold: str | None = None):
+    """Choose the unit/metric whose endpoint growth is most relevant.
+
+    With an explicit threshold, only an actual crossing is a candidate. Otherwise a large
+    relative increase in one unit could hide a smaller increase in another unit that is the
+    one the user asked us to find.
+    """
     best = None
+    already_over = None
     for name, b_unit in bad["units"].items():
         if unit and name != unit:
             continue
@@ -259,12 +286,26 @@ def _pick_target(good: dict, bad: dict, unit: str | None, metric: str | None):
             continue
         for m in [metric] if metric else list(blame.METRICS):
             key = blame.METRICS[m][0]
-            delta = b_unit[key]["median"] - a_unit[key]["median"]
+            good_value = a_unit[key]["median"]
+            bad_value = b_unit[key]["median"]
+            delta = bad_value - good_value
             band = blame.noise_band(a_unit[key], b_unit[key])
-            score = delta / max(a_unit[key]["median"], blame.MIN_BAND)
-            if (delta > band or unit or metric) and (best is None or score > best[0]):
-                best = (score, name, m)
-    return best
+            limit = parse_threshold(threshold, good_value) if threshold else good_value + band
+            if threshold:
+                eligible = good_value <= limit < bad_value
+                score = (bad_value - limit) / max(abs(limit), blame.MIN_BAND)
+                if good_value > limit:
+                    over_score = delta / max(good_value, blame.MIN_BAND)
+                    if already_over is None or over_score > already_over[0]:
+                        already_over = (over_score, name, m, limit)
+            else:
+                eligible = delta > band or bool(unit or metric)
+                score = delta / max(good_value, blame.MIN_BAND)
+            if eligible and (best is None or score > best[0]):
+                best = (score, name, m, limit)
+    # Prefer a real crossing. If there is none, retain the most relevant metric whose good
+    # endpoint was already above an absolute threshold so the caller can explain the mistake.
+    return best or already_over
 
 
 def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
@@ -290,12 +331,15 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
                 "measurement_status": "error",
                 "warnings": _warnings(g_commit, g) + _warnings(b_commit, b),
                 "message": f"cannot measure {', '.join(broken)}; see warnings"}
-    target = _pick_target(g, b, unit, metric)
+    target = _pick_target(g, b, unit, metric, threshold)
     if target is None:
+        message = ("bad does not cross the threshold for any matching unit/metric"
+                   if threshold else
+                   "bad is not significantly worse than good for any unit/metric")
         return {**out, "status": "no_regression",
                 "measurement_status": "complete",
-                "message": "bad is not significantly worse than good for any unit/metric"}
-    _, unit_name, metric_name = target
+                "message": message}
+    _, unit_name, metric_name, limit = target
     key = blame.METRICS[metric_name][0]
 
     endpoint_outcomes = {g["units"][unit_name]["outcome"], b["units"][unit_name]["outcome"]}
@@ -309,10 +353,6 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
         return u[key]["median"]
 
     good_v, bad_v = value(g), value(b)
-    if threshold:
-        limit = parse_threshold(threshold, good_v)
-    else:
-        limit = good_v + blame.noise_band(g["units"][unit_name][key], b["units"][unit_name][key])
     out.update(unit=unit_name, metric=metric_name, threshold=limit)
     if good_v > limit:
         raise ValueError(

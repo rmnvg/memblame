@@ -182,15 +182,41 @@ def test_concurrent_cache_writers_use_independent_atomic_temp_files(tmp_path):
     writers = 12
     barrier = threading.Barrier(writers)
 
+    cached = {
+        "schema": 1, "valid": True, "attributed": False, "functions": {},
+        "warnings": [], "env_problems": [], "python": "3.12", "executable": sys.executable,
+        "platform": sys.platform, "runs": 1, "nframe": 1,
+        "units": {"workload": {"outcome": "passed",
+                                 "peak": {"median": 1, "min": 1, "max": 1, "samples": [1]},
+                                 "end": {"median": 1, "min": 1, "max": 1, "samples": [1]},
+                                 "at_peak": None, "retained": None}},
+    }
+
     def write(index: int) -> None:
         barrier.wait()
-        cache.put(sha, {"schema": 1, "writer": index, "payload": "x" * 100_000})
+        cache.put(sha, {**cached, "writer": index, "payload": "x" * 100_000})
 
     with ThreadPoolExecutor(max_workers=writers) as pool:
         list(pool.map(write, range(writers)))
     stored = cache.get(sha)
     assert stored is not None and stored["writer"] in range(writers)
     assert not list(cache.dir.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("damaged", [
+    {},
+    {"schema": 1},
+    {"schema": 1, "valid": True, "attributed": False, "functions": {},
+     "warnings": [], "env_problems": [], "units": {"workload": {}}},
+])
+def test_damaged_cache_entries_are_ignored(tmp_path, damaged):
+    repo = Repo(tmp_path / "repo")
+    sha = repo.commit({"bench.py": "x = 1\n"}, "initial")
+    cache = measure.Cache(repo.path, sys.executable, measure.Settings("script:bench.py", runs=1))
+    cache.dir.mkdir(parents=True)
+    cache._path(sha).write_text(json.dumps(damaged))
+
+    assert cache.get(sha) is None
 
 
 @pytest.mark.parametrize("windows", [False, True])

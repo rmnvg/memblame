@@ -102,6 +102,18 @@ def test_bisect_rejects_unknown_unit_and_already_exceeded_threshold(planted, cap
     assert json.loads(out)["kind"] == "error"
 
 
+def test_malformed_threshold_is_rejected_before_anything_is_measured(planted, capsys, monkeypatch):
+    """A typo in --threshold must not cost two full endpoint measurements first."""
+    monkeypatch.setattr(api, "bisect", lambda *a, **k: pytest.fail("measured despite a bad "
+                                                                  "threshold"))
+    code, out, err = run_cli(capsys, "bisect", "--good", planted.commits["initial"],
+                             "--bad", planted.commits["changelog"], "--threshold", "1.2.3MB",
+                             "-C", str(planted.path), "-w", planted.workload, "--json", *PY)
+    assert code == 1
+    assert "bad threshold '1.2.3MB'" in err and "200MB" in err
+    assert json.loads(out)["kind"] == "error"
+
+
 def _report_header(kind):
     return {"schema": 1, "kind": kind, "repo": "/repo", "workload": "call:pkg:run",
             "python": "/python", "warnings": []}
