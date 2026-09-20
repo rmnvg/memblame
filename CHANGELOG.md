@@ -26,13 +26,57 @@ The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/
   directory holding the workload's stdout/stderr — which is uncapped on disk, since only
   its tail is read back — so both used to stay in the temp directory for ever. A directory
   is only removed once the pid it recorded is gone, so concurrent runs keep their own.
+- A commit whose subject contains a `\x1e` byte no longer breaks every command with a bare
+  `not enough values to unpack`. Commit metadata was split on `\x1e`, which a subject may
+  legitimately contain; records are now separated by newline, the one byte git guarantees
+  is absent (it joins a multi-line subject with spaces and strips newlines from an ident).
+  Not `str.splitlines()`, which also breaks on `\x1c`-`\x1e`, `\x85` and U+2028/9.
+- A Python file too deeply nested to parse (generated code: a chain of thousands of `+`, a
+  long `elif` ladder) aborted the whole analysis *after* both commits had been measured, and
+  on Windows with Python 3.9 killed the interpreter outright (`Windows fatal exception: stack
+  overflow`). 3.9's `ast.parse` recurses in C with no depth check, so no `except` can catch
+  it; a stack is 8 MB on Linux and macOS but 1 MB on Windows, where 20 000 terms already
+  crash it. The parse now runs on a thread with a 64 MB stack of its own (chains of 100 000+
+  terms), and the walk over the tree is iterative, so a deep tree that parses keeps its
+  scopes instead of losing them to the recursion limit. What still cannot be parsed means
+  "no scopes in this file", exactly as a syntax error already did.
+- `--cache-input` pointing at a device or FIFO hung for ever with nothing printed, since
+  the read never reaches EOF. Only regular files are read now; a declared directory already
+  filtered these out.
+- Source lines that read like diff headers no longer break blame. Inside a hunk every line
+  carries a `-`/`+` prefix, so a deleted `-- "note` arrives as `--- "note`: memblame read it
+  as a file header, which aborted the whole analysis with a `SyntaxError` traceback on the
+  unterminated quote, and (with a matching `++ ` line) blamed later hunks on a path that
+  does not exist. File headers are now only read between `diff --git` and the first `@@`,
+  and an unparsable quoted name is used verbatim instead of raising.
+- A half-written workload (`call:`, `call:mod`, `script:`, or one with unbalanced quotes)
+  is rejected before any checkout or subprocess. It used to fail inside the runner and
+  reach the user as a truncated Python traceback reported as an unmeasurable commit. A bare
+  `pytest:` still means the whole suite.
 - The HTML report's range chart divided by zero when every measured value was 0. Not
   reachable through the CLI (even a no-op workload measures ~260 KB), but `artifact.render`
   takes any schema-1 document, and the extension's chart already guarded this case.
 
 ### Added
 
-- `py.typed`, so type checkers use the annotated public API (`PublicResult`).
+- `py.typed`, so type checkers use the annotated public API (`PublicResult`), and the
+  package now actually type-checks: `mypy` is clean and runs in CI, so the annotations
+  shipped under that marker stay true. The fixes were real, not silencing — `Meter`'s
+  poller attributes were annotated `None` but hold a `Thread`/`Event`, `_result_status`
+  returns the contract's `Literal`, and the renderers take `Mapping[str, Any]`, which says
+  what they already did: read, never mutate. `runner.py` gains no runtime import from this
+  (verified: it still loads zero modules beyond a bare interpreter's).
+- A `toml` extra: `pip install "memblame[toml]"` makes `memblame.toml` and
+  `[tool.memblame]` work on Python 3.9/3.10, where the standard library has no TOML
+  parser. The core stays dependency-free and the without-it path still explains itself.
+- The extension renders a `run` result as a measurement table; it used to fall through to
+  a raw JSON dump.
+- Two things that used to need a person on Windows are now tested. Cancelling is covered by
+  a test that cancels a real run mid-measurement and checks the worktree is gone, and the
+  Python extension's API glue is a pure function (`selectedFromPythonApi`) exercised against
+  every shape it returns, including a missing API, an unresolvable environment and a
+  rejecting `resolveEnvironment` -- all of which mean "no selection", leaving the CLI's own
+  interpreter discovery in charge rather than failing the command.
 - `memblame.contract.ErrorResult` / `error_output()`: the `{"kind": "error"}` document that
   `--json` prints on failure is now part of the typed schema-1 contract.
 
@@ -44,8 +88,13 @@ The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/
 - The release workflow checks the tag against `vscode-ext/package.json` as well as the
   package version, so a tag cannot publish a mismatched extension.
 - `bundle-python.js` copies `py.typed` into the bundled engine.
-- The extension's integration harness removes its temp directory; each run used to leave a
-  fixture repo plus a VS Code user-data dir (tens of MB) behind.
+- mypy ignores the missing `pytest` import. `runner.py` imports it lazily inside the
+  *project's* interpreter, so it is deliberately not a memblame dependency; the `types` CI
+  job, whose environment has only memblame and mypy, failed on it while a development
+  environment that happens to have pytest installed passed.
+- The extension's integration harness and the screenshot script remove their temp
+  directories; each run used to leave one behind (the harness, a fixture repo plus a VS Code
+  user-data dir, tens of MB).
 - README: the GitHub job-summary recipe appends with `>>` instead of `-o
   "$GITHUB_STEP_SUMMARY"`, which replaced whatever an earlier step in the job had written.
 

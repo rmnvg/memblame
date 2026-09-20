@@ -11,6 +11,7 @@ from memblame import api, blame, git
 from memblame.runner import (
     Attributor,
     _grouped_traces,
+    _scopes_of,
     check_environment,
     innermost_scope,
     scopes_from_source,
@@ -162,6 +163,132 @@ deleted file mode 100644
 +++ /dev/null
 @@ -1,2 +0,0 @@
 """
+
+
+def test_source_too_deeply_nested_to_parse_yields_no_scopes():
+    """Generated code (a chain of thousands of `+`) can be too deep for the parser.
+
+    That raised RecursionError out of scopes_from_source, which aborted the whole analysis
+    after both commits had already been measured. Unparsable means no scopes, as for a
+    syntax error. (The source has no definitions, so [] is right whether or not the parse
+    gave out: 3.12's parser raises, 3.9's and 3.14's succeed.)
+    """
+    generated = "TOTAL = " + "+".join(["1"] * 60_000) + "\n"
+    assert scopes_from_source(generated) == []
+    # A syntax error already behaved this way; keep them consistent.
+    assert scopes_from_source("def (:\n") == []
+
+
+def test_a_deep_tree_keeps_its_scopes():
+    """The walk over a tree is iterative. Recursing over thousands of levels hit the recursion
+    limit (1 000) and threw away every scope in the file, though the file had parsed fine.
+
+    The tree is built by hand rather than parsed: how deep the parser will go is a property
+    of the Python build and the platform (3.12 on Windows refuses a chain that macOS accepts),
+    and this tests the walk, not the parser.
+    """
+    import ast
+
+    tree = ast.parse("def after():\n    pass\n")
+    deep = ast.Constant(value=1)
+    for _ in range(5_000):
+        deep = ast.BinOp(left=deep, op=ast.Add(), right=ast.Constant(value=1))
+    tree.body.insert(0, ast.Expr(value=deep))
+    assert [scope[3] for scope in _scopes_of(tree)] == ["after"]
+
+
+def test_parsing_deep_source_does_not_depend_on_the_callers_stack(tmp_path):
+    """On Python 3.9 `ast.parse` recurses in C without a depth check, so a long enough chain
+    overflows the C stack and kills the interpreter -- no `except` can catch that. A stack is
+    8 MB on Linux and macOS but 1 MB on Windows, where CI died with `Windows fatal exception:
+    stack overflow` on 3.9. Reproduce that stack here on every platform: a caller thread
+    with 1 MB, parsing 60 000 terms. Only the process surviving matters, so run it in one.
+    """
+    import os
+    import subprocess
+    import sys
+
+    child = textwrap.dedent("""
+        import threading
+        from memblame.runner import scopes_from_source
+
+        threading.stack_size(1 << 20)  # what Windows gives its main thread
+        out = []
+
+        def work():
+            src = "TOTAL = " + "+".join(["1"] * 60_000) + "\\ndef after():\\n    return TOTAL\\n"
+            out.append([scope[3] for scope in scopes_from_source(src)])
+
+        thread = threading.Thread(target=work)
+        thread.start()
+        thread.join()
+        print(out[0])
+    """)
+    script = tmp_path / "deep_parse.py"  # a file, not -c: no command-line quoting to trust
+    script.write_text(child, encoding="utf-8")
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    inherited = os.environ.get("PYTHONPATH", "")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(src_dir), inherited]))}
+    proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                          env=env, timeout=120)
+    assert proc.returncode == 0, (proc.returncode, proc.stderr[-500:])
+    # 3.12's parser gives up (RecursionError -> no scopes); 3.9's and 3.14's succeed.
+    assert proc.stdout.strip() in ("[]", "['after']"), proc.stdout
+
+
+@pytest.mark.parametrize("subject", [
+    "plain subject",
+    "holds \x1e a record separator",   # the byte this format used to end records with
+    "holds \x1c \x1d \x85 too",         # other things str.splitlines() breaks on
+    "holds \u2028 a line separator",
+    "holds \x00 a nul",                # last field, so maxsplit keeps it whole
+])
+def test_commit_metadata_survives_control_bytes_in_the_subject(subject):
+    """Only a newline is impossible in these fields; a subject may hold any other byte.
+
+    Parsing records on \x1e (or with str.splitlines(), which also breaks on \x1c-\x1e,
+    \x85 and U+2028/9) tore such a commit apart and failed with a bare unpack error.
+    """
+    record = "\x00".join(["a" * 40, "aaaaaaa", "An Author", "2026-01-01T00:00:00+00:00",
+                          subject])
+    commits = git._parse_commits(record + "\n")
+    assert len(commits) == 1
+    assert commits[0].subject == subject
+    assert commits[0].author == "An Author"
+
+
+def test_unparsable_commit_metadata_names_the_record():
+    with pytest.raises(git.GitError, match="could not parse commit metadata"):
+        git._parse_commits("not\x00enough\x00fields\n")
+
+
+BODY_LOOKS_LIKE_A_HEADER = "\n".join([
+    "diff --git a/bench.py b/bench.py",
+    "--- a/bench.py",
+    "+++ b/bench.py",
+    "@@ -2,2 +2,2 @@",
+    # Two deleted/added source lines that happen to read as a file-header pair. This file
+    # is full of them: the DIFF fixture below is exactly such a Python string.
+    '--- "unterminated sql comment',
+    "+++ new marker",
+    "@@ -9 +9 @@ def run():",
+    "-    return [0] * 100000",
+    "+    return [0] * 200000",
+]) + "\n"
+
+
+def test_hunk_body_is_never_mistaken_for_a_file_header():
+    """Inside a hunk every line carries a -/+ prefix, so source lines starting with `-- `
+    and `++ ` arrive as `--- ` and `+++ `. Reading those as file headers blamed later hunks
+    on a nonexistent path, and an unterminated quote aborted the analysis outright."""
+    hunks = git.parse_hunks(BODY_LOOKS_LIKE_A_HEADER)
+    assert [(h.file, h.new_range) for h in hunks] == [("bench.py", (2, 3)), ("bench.py", (9, 9))]
+
+
+@pytest.mark.parametrize("header", ['"a/unterminated.py', '"a/\\777.py"', '"'])
+def test_unparsable_quoted_path_is_used_verbatim(header):
+    """A name that is not a well-formed quoted path must never abort an analysis."""
+    assert isinstance(git._diff_path(header), str)
 
 
 def test_parse_hunks():

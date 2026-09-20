@@ -23,6 +23,19 @@ jobs:
         env:
           PYTHONUTF8: "1"
 
+  types:
+    # memblame ships py.typed, so its annotations are part of the published contract.
+    # One job only: some ignores are platform- or version-specific and `warn_unused_ignores`
+    # would flag them on the other side of those branches.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . mypy
+      - run: mypy
+
   package:
     # Test the files users actually receive, including the test helpers in the sdist.
     runs-on: ubuntu-latest

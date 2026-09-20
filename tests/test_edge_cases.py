@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from memblame import api, git
+from memblame import api, artifact, git, measure, report
 from memblame.measure import Settings
 
 BIG = "def run():\n    keep = [bytes(100) for _ in range(100_000)]\n    return len(keep)\n"
@@ -363,6 +363,72 @@ def test_stale_worktree_from_killed_run_is_removed(tmp_path):
         assert (live / "wt").exists()
     finally:
         git.git(r.path, "worktree", "remove", "--force", str(live / "wt"), check=False)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no mkfifo on Windows")
+def test_a_declared_cache_input_that_is_not_a_regular_file_does_not_hang(tmp_path):
+    """A FIFO or device never reaches EOF, so read_bytes() would never return.
+
+    memblame hung for ever, buffer growing, with nothing printed. Reading is now skipped
+    for anything that is not a regular file; inside a declared directory the is_file()
+    filter already did this.
+    """
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    regular = tmp_path / "data.bin"
+    regular.write_bytes(b"payload")
+
+    def digest(*inputs):
+        return measure.workload_inputs_hash(
+            tmp_path, Settings("call:a:b", cache_inputs=[str(i) for i in inputs]))
+
+    # Would not return at all before the fix.
+    assert digest(fifo)
+    # Still distinguishes a FIFO from a regular file, a missing path and nothing at all.
+    assert len({digest(fifo), digest(regular), digest(tmp_path / "gone"), digest()}) == 4
+    # A FIFO sitting inside a declared directory is skipped, not read.
+    assert digest(tmp_path)
+
+
+def test_control_bytes_in_a_commit_subject_do_not_break_analysis(tmp_path):
+    """Real git, not a synthetic record: git stores a subject byte-for-byte."""
+    r = Repo(tmp_path / "repo")
+    weird = "subject with \x1e a record separator"
+    base = r.commit({"bench.py": "def run():\n    return [0] * 1000\n"}, "plain")
+    head = r.commit({"bench.py": "def run():\n    return [0] * 500_000\n"}, weird)
+    with session(r, "call:bench:run") as s:
+        out = api.diff(s, base, head)
+
+    assert out["measurement_status"] == "complete", out["warnings"]
+    assert out["head"]["subject"] == weird
+    assert any(f["delta"] > 0 for f in out["findings"])
+    # The renderers must carry it through without tearing the report apart either.
+    for rendered in (report.format_diff(out), artifact.markdown(out), artifact.html_report(out)):
+        assert "record separator" in rendered
+
+
+def test_source_lines_that_look_like_diff_headers_do_not_break_blame(tmp_path):
+    """Real git output, not a synthetic diff: a deleted `-- "..."` line arrives as `--- "..."`.
+
+    memblame used to read it as a file header, which aborted the analysis on the unterminated
+    quote and blamed later hunks on a path that does not exist.
+    """
+    r = Repo(tmp_path / "repo")
+    before = ('SQL = """\n-- "unterminated sql comment\nSELECT 1\n"""\n\n'
+              "def run():\n    return [0] * 100_000\n")
+    after = ('SQL = """\nSELECT 1\n"""\n\n'
+             "def run():\n    return [0] * 2_000_000\n")
+    base = r.commit({"bench.py": before}, "with the sql comment")
+    head = r.commit({"bench.py": after}, "drop it and allocate more")
+    with session(r, "call:bench:run") as s:
+        out = api.diff(s, base, head)
+
+    assert out["measurement_status"] == "complete", out["warnings"]
+    peak = next(f for f in out["findings"] if f["metric"] == "peak")
+    assert peak["delta"] > 0
+    # Blamed on the real file, never on a path invented from the hunk body.
+    assert peak["verdict"]["file"] == "bench.py"
+    assert {c["file"] for c in out["changed_functions"]} == {"bench.py"}
 
 
 def test_orphaned_scratch_directories_are_reclaimed(tmp_path):

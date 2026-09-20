@@ -2,18 +2,13 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { buildArgs, chooseInterpreters, InterpreterChoice, runMemblame } from "./cli";
+import { buildArgs, chooseInterpreters, InterpreterChoice, PythonEnvironmentsApi, runMemblame, selectedFromPythonApi } from "./cli";
 import { Finding, MemblameResult } from "./contract";
 import { mb, renderHtml } from "./render";
 import { findTests, isTestFile, locateScope, pytestWorkload, suggestWorkloads, tomlDefinesKey } from "./workload";
 
 interface PythonExtensionApi {
-  environments?: {
-    getActiveEnvironmentPath?(resource: vscode.Uri): { path: string } | undefined;
-    resolveEnvironment(path: { path: string }): Promise<{
-      executable?: { uri?: vscode.Uri };
-    } | undefined>;
-  };
+  environments?: PythonEnvironmentsApi;
 }
 
 function errorMessage(error: unknown): string {
@@ -315,14 +310,9 @@ async function selectedInterpreter(repo: string): Promise<string | undefined> {
   }
   try {
     const api = (ext.isActive ? ext.exports : await ext.activate()) as PythonExtensionApi;
-    const environments = api?.environments;
-    const envPath = environments?.getActiveEnvironmentPath?.(vscode.Uri.file(repo));
-    if (environments && envPath) {
-      const env = await environments.resolveEnvironment(envPath);
-      return env?.executable?.uri?.fsPath ?? envPath.path;
-    }
+    return await selectedFromPythonApi(api?.environments, vscode.Uri.file(repo));
   } catch {
-    // no usable selection: fall through to the CLI's own discovery
+    // the extension failed to activate: fall through to the CLI's own discovery
   }
   return undefined;
 }

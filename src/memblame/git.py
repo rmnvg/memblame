@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -55,16 +56,24 @@ def working_tree_commit() -> Commit:
     return Commit(WORKTREE, "working", "", "", "uncommitted changes")
 
 
-_FMT = "%H%x00%h%x00%an%x00%aI%x00%s%x1e"
+# One record per line. A newline is the only separator a commit cannot smuggle into these
+# fields: git joins a multi-line subject with spaces and strips newlines out of an ident,
+# while a subject can hold any other byte, including the \x1e this format used to end with.
+_FMT = "%H%x00%h%x00%an%x00%aI%x00%s"
 
 
 def _parse_commits(out: str) -> list[Commit]:
     commits = []
-    for rec in out.split("\x1e"):
-        rec = rec.strip("\n")
-        if rec:
-            sha, short, author, date, subject = rec.split("\x00", 4)
-            commits.append(Commit(sha, short, author, date, subject))
+    # Not splitlines(): it also breaks on \x1c-\x1e, \x85 and U+2028/9, which a subject may
+    # contain. NUL cannot reach an ident (it cannot even be passed in argv), and maxsplit
+    # keeps any NUL in the subject, which is last.
+    for rec in out.split("\n"):
+        if not rec:
+            continue
+        fields = rec.split("\x00", 4)
+        if len(fields) != 5:
+            raise GitError(f"could not parse commit metadata from git: {rec[:120]!r}")
+        commits.append(Commit(*fields))
     return commits
 
 
@@ -157,7 +166,7 @@ def _remove_orphan_scratch(tmp: Path) -> list[str]:
     keeps its own. One that records no pid is left alone: it may belong to a run that is
     still starting up, or to an older memblame.
     """
-    removed = []
+    removed: list[str] = []
     try:
         entries = sorted(tmp.iterdir())
     except OSError:
@@ -283,17 +292,27 @@ class Hunk:
 
 
 def parse_hunks(diff_text: str) -> list[Hunk]:
+    """Hunks from `git diff` output (the `diff --git` form, which every caller here uses).
+
+    File headers are only read between a `diff --git` line and the first `@@` of that file.
+    Inside a hunk body every line carries a `-`/`+` prefix, so a deleted source line such as
+    `-- "note` arrives as `--- "note` and would otherwise be mistaken for a file header.
+    """
     hunks: list[Hunk] = []
     current: str | None = None
     old = ""
+    in_header = False
     for line in diff_text.splitlines():
-        if line.startswith("--- "):
+        if line.startswith("diff --git "):
+            in_header, current, old = True, None, ""
+        elif in_header and line.startswith("--- "):
             source = _diff_path(line[4:])
             old = "" if source == "/dev/null" else source.removeprefix("a/")
-        elif line.startswith("+++ "):
+        elif in_header and line.startswith("+++ "):
             target = _diff_path(line[4:])
             current = old if target == "/dev/null" else target.removeprefix("b/")
         elif line.startswith("@@") and current is not None:
+            in_header = False
             m = _HUNK_RE.match(line)
             if m:
                 a, b, c, d = m.groups()
@@ -311,7 +330,16 @@ def _diff_path(header: str) -> str:
         # Git quotes backslashes and quotes using the same escapes as Python bytes.
         # Non-ASCII text may remain literal with core.quotePath=false.
         literal = path.encode("utf-8").decode("ascii", errors="backslashreplace")
-        return ast.literal_eval("b" + literal).decode("utf-8", errors="replace")
+        try:
+            with warnings.catch_warnings():
+                # A malformed escape would otherwise print a SyntaxWarning to stderr, which
+                # is where memblame's progress goes.
+                warnings.simplefilter("ignore", SyntaxWarning)
+                return ast.literal_eval("b" + literal).decode("utf-8", errors="replace")
+        except (ValueError, SyntaxError):
+            # Not a well-formed quoted path after all: use it verbatim rather than let an
+            # unparsable name abort the whole analysis.
+            return path
     return path
 
 

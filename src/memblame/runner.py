@@ -32,6 +32,15 @@ import os
 import sys
 import time
 
+# Types only. `import typing` would itself break the rule above (a bare interpreter has not
+# loaded it), and `from __future__ import annotations` means none of these are evaluated at
+# runtime, so this block stays empty outside a type checker.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    import threading
+    from collections.abc import Sequence
+    from typing import Any
+
 SCHEMA = 1
 HINT_FRACTION = 0.9  # start snapshotting once memory reaches 90% of the known peak
 SNAPSHOT_STEP = 1.02  # ...then only on a new high 2% above the last snapshot (~6 snapshots)
@@ -45,32 +54,86 @@ NOT_PROJECT_MODULES = {"tests", "test", "conftest", "setup", "docs", "examples",
 # --------------------------------------------------------------------------- AST scopes
 
 
+PARSE_STACK_BYTES = 64 * 1024 * 1024  # 8x Linux/macOS's default stack, 64x Windows's
+
+
+def _parse(source: str):
+    """`ast.parse`, on a thread whose stack is big enough for a deep tree.
+
+    Python 3.9 (fixed later) turns the parsed tree into Python objects with C recursion and
+    no depth check, so an unbounded chain (`1+1+1+...`, a long `elif` ladder: generated code)
+    overflows the C stack and kills the interpreter outright. No `except` can catch that. A
+    stack is 8 MB on Linux and macOS but only 1 MB on Windows, where 20 000 terms already
+    crash it, so the parse gets a stack of its own instead of whatever the caller's platform
+    happened to give it. Exceptions cross the thread boundary and are raised in the caller.
+    """
+    import ast
+    import threading
+
+    box: list = []
+
+    def work() -> None:
+        try:
+            box.append((True, ast.parse(source)))
+        except BaseException as exc:  # noqa: BLE001 - re-raised below, in the caller
+            box.append((False, exc))
+
+    previous = None
+    try:
+        previous = threading.stack_size(PARSE_STACK_BYTES)
+        thread = threading.Thread(target=work)
+        thread.start()
+    except (RuntimeError, ValueError):
+        # No threads, or none this large, here: parse in place, exactly as before.
+        return ast.parse(source)
+    finally:
+        if previous is not None:
+            threading.stack_size(previous)  # a process-wide setting; put it back
+    thread.join()
+    ok, value = box[0]
+    if not ok:
+        raise value
+    return value
+
+
 def scopes_from_source(source: str) -> list[tuple[int, int, int, str]]:
     """Return (def_line, first_line, end_line, qualname) for each function and class.
 
     `def_line` is the line of the `def`/`class` keyword (frames inside the body never point
     above it); `first_line` includes decorators and is used for diff-hunk matching.
     """
+    try:
+        tree = _parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        # Generated code can be too deep or too complex for the parser (which exception says
+        # so, and at what depth, depends on the Python version and the platform). Like a
+        # syntax error that means "no scopes in this file", never a reason to abort an
+        # analysis that has already measured its commits.
+        return []
+    return _scopes_of(tree)
+
+
+def _scopes_of(tree) -> list[tuple[int, int, int, str]]:
+    """The scopes in a parsed tree, walking it with an explicit stack instead of recursion.
+
+    A deep tree that did parse must not cost the file its scopes because the walk ran into
+    the recursion limit. The result is sorted, so visit order does not matter.
+    """
     import ast
 
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return []
     out: list[tuple[int, int, int, str]] = []
-
-    def visit(node, prefix: str) -> None:
+    pending: list[tuple[ast.AST, str]] = [(tree, "")]
+    while pending:
+        node, prefix = pending.pop()
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 name = f"{prefix}{child.name}"
                 first = min([d.lineno for d in child.decorator_list] + [child.lineno])
                 out.append((child.lineno, first, child.end_lineno or child.lineno, name))
                 inner = "<locals>." if not isinstance(child, ast.ClassDef) else ""
-                visit(child, f"{name}.{inner}")
+                pending.append((child, f"{name}.{inner}"))
             else:
-                visit(child, prefix)
-
-    visit(tree, "")
+                pending.append((child, prefix))
     out.sort()
     return out
 
@@ -151,7 +214,7 @@ class Attributor:
         self._frame_cache[key] = result
         return result
 
-    def summarize(self, traces: list, reference_bytes: int) -> dict:
+    def summarize(self, traces: Sequence[Any], reference_bytes: int) -> dict:
         """Aggregate a snapshot into per-function self/cumulative bytes and top lines."""
         from collections import defaultdict
 
@@ -179,7 +242,7 @@ class Attributor:
                 unattributed += size
                 if total_nframe is not None and total_nframe > len(frames):
                     truncated += size
-        functions = [
+        functions: list[dict[str, Any]] = [
             {"id": fid, "self": self_bytes.get(fid, 0), "cumulative": cum}
             for fid, cum in cum_bytes.items()
             if cum >= MIN_FUNC_BYTES
@@ -196,7 +259,7 @@ class Attributor:
         }
 
 
-def _grouped_traces(traces: list):
+def _grouped_traces(traces: Sequence[Any]):
     """Yield (frames most-recent-first, total size, total_nframe) per distinct traceback.
 
     `traces` is the raw list from `_tracemalloc._get_traces()` (what `take_snapshot()` wraps):
@@ -229,15 +292,16 @@ class Meter:
         self.nframe = nframe
         self.attribute = attribute
         self.peak_mode = peak_mode
-        self._poller = None
-        self._stop_poll = None
+        self._poller: threading.Thread | None = None
+        self._stop_poll: threading.Event | None = None
+        self._switch = 0.0  # the interpreter switch interval to restore after polling
         self.attr = attributor
         self.hints = hints
         self.units: list[dict] = []
         self._name = ""
         self._t0 = 0.0
         self._best = 0
-        self._snapshot: list | None = None  # raw traces at (near) the peak
+        self._snapshot: Sequence[Any] | None = None  # raw traces at (near) the peak
         self._threshold = 0
 
     def _check(self) -> None:
@@ -250,8 +314,8 @@ class Meter:
         if event == "return" or event == "c_return":
             self._check()
 
-    def _poll(self) -> None:
-        while not self._stop_poll.wait(POLL_INTERVAL):
+    def _poll(self, stop: threading.Event) -> None:
+        while not stop.wait(POLL_INTERVAL):
             self._check()
 
     def start(self, name: str) -> None:
@@ -272,7 +336,8 @@ class Meter:
                 self._stop_poll = threading.Event()
                 self._switch = sys.getswitchinterval()
                 sys.setswitchinterval(POLL_INTERVAL)  # let the poller get the GIL often
-                self._poller = threading.Thread(target=self._poll, daemon=True)
+                self._poller = threading.Thread(target=self._poll, args=(self._stop_poll,),
+                                                daemon=True)
                 self._poller.start()
         self._t0 = time.perf_counter()
 
@@ -281,7 +346,7 @@ class Meter:
         sys.setprofile(None)
         if "threading" in sys.modules:
             sys.modules["threading"].setprofile(None)
-        if self._poller is not None:
+        if self._poller is not None and self._stop_poll is not None:
             self._stop_poll.set()
             self._poller.join()
             self._poller = None
@@ -405,7 +470,8 @@ def _run_script(argv: list[str], meter: Meter) -> None:
             code = compile(fh.read(), path, "exec")
         main = type(sys)("__main__")
         main.__file__ = path
-        main.__builtins__ = __builtins__
+        # __builtins__ is a CPython implementation detail, absent from typeshed's module type.
+        main.__builtins__ = __builtins__  # type: ignore[attr-defined]
         saved = sys.modules.get("__main__")
         sys.modules["__main__"] = main  # pickle/multiprocessing look things up here
         try:
@@ -475,7 +541,9 @@ def pytest_extra_args() -> list[str]:
 
         eps = entry_points()
         # Python 3.9 returns a dict and has no group= keyword; 3.10+ has .select()
-        group = eps.select(group="pytest11") if hasattr(eps, "select") else eps.get("pytest11", [])
+        # The .get branch is the 3.9 shape (a plain dict); typeshed only models the modern one.
+        group = (eps.select(group="pytest11") if hasattr(eps, "select")
+                 else eps.get("pytest11", []))  # type: ignore[attr-defined]
         plugins = {ep.name for ep in group}
     except Exception:  # noqa: BLE001 - metadata problems must not stop the measurement
         plugins = set()

@@ -203,6 +203,14 @@ def test_cli_writes_markdown_and_html_reports(planted, tmp_path, capsys):
     (["-w", "call:a:b", "--runs", "0"], "--runs must be positive"),
     (["-w", "call:a:b", "--nframe", "-1"], "--nframe must be positive"),
     ([], "no workload"),
+    # A half-written target used to reach the runner and come back as a truncated
+    # traceback reported as an unmeasurable commit, after a checkout and a subprocess.
+    (["-w", "call:"], "call needs a module and a function"),
+    (["-w", "call:mod"], "call needs a module and a function"),
+    (["-w", "call::"], "call needs a module and a function"),
+    (["-w", "script:"], "script needs a path"),
+    (["-w", "script:   "], "script needs a path"),
+    (["-w", "script:'unbalanced"], "check the quoting"),
 ])
 def test_bad_arguments_give_one_line_errors_and_json(planted, capsys, args, message):
     code, _, err = run_cli(capsys, "diff", "-C", str(planted.path), *args)

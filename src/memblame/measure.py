@@ -159,7 +159,9 @@ def _launch(python: str, spec_path: Path, root: Path, env: dict, tmp: Path,
     waiting for an end-of-file that never comes. stdin is closed, so a workload that calls
     input() fails fast instead of waiting on the user's terminal.
     """
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    # CREATE_NEW_PROCESS_GROUP only exists on Windows; the guard keeps it unevaluated elsewhere.
+    creationflags = (subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+                     if os.name == "nt" else 0)
     out_log, err_log = tmp / "stdout.log", tmp / "stderr.log"
     proc = None
     try:
@@ -247,6 +249,31 @@ def split_args(text: str) -> list[str]:
     lexer.commenters = ""
     lexer.escape = ""
     return list(lexer)
+
+
+def validate_workload(workload: str) -> None:
+    """Reject a workload that cannot run, before any checkout or subprocess happens.
+
+    Without this an empty or half-written target only fails inside the runner, and reaches
+    the user as a truncated Python traceback reported as an unmeasurable commit. A bare
+    `pytest:` is left alone: it means the whole suite.
+    """
+    kind, _, target = workload.partition(":")
+    if kind not in ("pytest", "script", "call"):
+        raise ValueError(f"bad workload {workload!r}: must start with pytest:, script: or call:")
+    if kind == "call":
+        module, sep, func = target.partition(":")
+        if not (module and sep and func):
+            raise ValueError(f"bad workload {workload!r}: call needs a module and a function, "
+                             "e.g. call:pkg.module:main")
+        return
+    try:
+        argv = split_args(target)
+    except ValueError as exc:
+        raise ValueError(f"bad workload {workload!r}: {exc}; check the quoting") from None
+    if kind == "script" and not argv:
+        raise ValueError(f"bad workload {workload!r}: script needs a path, "
+                         "e.g. script:bench/run.py")
 
 
 def normalize_workload(repo: Path, workload: str) -> str:
@@ -499,6 +526,12 @@ def workload_inputs_hash(repo: Path, settings: Settings) -> str:
                     h.update(b"\0")
                     h.update(child.read_bytes())
                     h.update(b"\0")
+            elif path.exists() and not path.is_file():
+                # A device or FIFO never reaches EOF, so reading it would hang for ever
+                # while the buffer grows. (Inside a declared directory the is_file() filter
+                # above already skips these.) A missing path still falls through to the
+                # read below, so it keeps hashing as "unreadable" the way it always has.
+                h.update(b"not-a-regular-file")
             else:
                 h.update(path.read_bytes())
         except OSError as exc:

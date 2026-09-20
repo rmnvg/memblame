@@ -8,9 +8,10 @@ import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 from . import blame, git
-from .contract import PublicResult
+from .contract import MeasurementStatus, PublicResult
 from .measure import (
     Cache,
     MeasureError,
@@ -21,6 +22,7 @@ from .measure import (
     find_python,
     measure,
     normalize_workload,
+    validate_workload,
 )
 from .runner import SCHEMA
 
@@ -37,6 +39,7 @@ class Session:
     def __init__(self, repo: Path, settings: Settings, use_cache: bool = True,
                  progress: Progress = _stderr):
         self.repo = git.repo_root(repo)
+        validate_workload(settings.workload)
         self.settings = replace(settings, workload=normalize_workload(self.repo, settings.workload))
         self.python = find_python(self.repo, settings.python)
         check_interpreter(self.python)
@@ -106,6 +109,16 @@ class Session:
         return commit, res
 
 
+def _public(out: dict[str, Any]) -> PublicResult:
+    """A finished result, assembled dynamically, as the typed schema-1 contract.
+
+    The builders below compose their output with `**` spreads and `.update()`, which no
+    TypedDict literal check can follow. `contract.validate_output` is the runtime guard, and
+    a test asserts that no command emits a key `PublicResult` does not declare.
+    """
+    return cast(PublicResult, out)
+
+
 def failed_result(error: str) -> dict:
     return {"schema": SCHEMA, "valid": False, "error": error, "env_problems": [], "units": {},
             "functions": {}, "attributed": True, "warnings": [], "runs": 0}
@@ -113,8 +126,9 @@ def failed_result(error: str) -> dict:
 
 def run(session: Session, rev: str = git.WORKTREE) -> PublicResult:
     commit, res = session.result(rev, attribute=True)
-    return {**session.header("run"), "commit": commit.to_json(), "result": res,
-            "measurement_status": _result_status(res), "warnings": _warnings(commit, res)}
+    out = {**session.header("run"), "commit": commit.to_json(), "result": res,
+           "measurement_status": _result_status(res), "warnings": _warnings(commit, res)}
+    return _public(out)
 
 
 def _compare(session: Session, a: tuple[git.Commit, dict], b: tuple[git.Commit, dict],
@@ -147,7 +161,7 @@ def diff(session: Session, base: str, head: str = git.WORKTREE) -> PublicResult:
         out["results"] = {"base": _brief(a[1]), "head": _brief(b[1])}
     out["warnings"] = _dedupe(_warnings(*a) + _warnings(*b))
     out["measurement_status"] = _combined_status(a[1], b[1])
-    return out
+    return _public(out)
 
 
 def _differs(a: dict, b: dict) -> bool:
@@ -202,7 +216,7 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
                 get(mid)
                 todo += [(mid, hi), (lo, mid)]
 
-    steps = []
+    steps: list[dict[str, Any]] = []
     order = sorted(measured)
     for lo, hi in zip(order, order[1:]):  # noqa: B905 - py3.9 has no strict=
         a, b = measured[lo], measured[hi]
@@ -230,12 +244,13 @@ def range_(session: Session, base: str, head: str, exhaustive: bool = False) -> 
         {**f, "commit": s["head"], "parent": s["base"]} for s in steps for f in s["findings"]
     ]
     findings.sort(key=lambda f: -abs(f["delta"]))
-    return {**session.header("range"), "mode": "exhaustive" if exhaustive else "adaptive",
-            "measured": len(measured), "points": points, "steps": steps,
-            "incomplete_commits": sum(1 for _, res in measured.values()
-                                      if _result_status(res) != "complete"),
-            "findings": findings, "warnings": _dedupe(warnings),
-            "measurement_status": _combined_status(*(res for _, res in measured.values()))}
+    out = {**session.header("range"), "mode": "exhaustive" if exhaustive else "adaptive",
+           "measured": len(measured), "points": points, "steps": steps,
+           "incomplete_commits": sum(1 for _, res in measured.values()
+                                     if _result_status(res) != "complete"),
+           "findings": findings, "warnings": _dedupe(warnings),
+           "measurement_status": _combined_status(*(res for _, res in measured.values()))}
+    return _public(out)
 
 
 _SIZE_RE = re.compile(r"^\s*([+]?)\s*([\d.]+)\s*(%|[kmg]i?b|b)?\s*$", re.IGNORECASE)
@@ -431,7 +446,7 @@ def bisect(session: Session, good: str, bad: str, threshold: str | None = None,
     out["measurement_status"] = _combined_status(
         *(res for _, res in measured.values()), skipped=bool(skipped)
     )
-    return out
+    return _public(out)
 
 
 def _require_ancestor(repo: Path, older: str, newer: str) -> None:
@@ -457,7 +472,7 @@ def _unit_passed(res: dict, unit: str) -> bool:
     return res.get("units", {}).get(unit, {}).get("outcome") == "passed"
 
 
-def _result_status(res: dict) -> str:
+def _result_status(res: dict) -> MeasurementStatus:
     """Shared completeness state for every public command result."""
     units = res.get("units", {})
     if res.get("error") or res.get("valid") is False or not units:
@@ -467,7 +482,7 @@ def _result_status(res: dict) -> str:
     return "complete"
 
 
-def _combined_status(*results: dict, skipped: bool = False) -> str:
+def _combined_status(*results: dict, skipped: bool = False) -> MeasurementStatus:
     statuses = {_result_status(result) for result in results}
     if "error" in statuses:
         return "error"

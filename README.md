@@ -142,7 +142,7 @@ included in cache keys automatically. If a workload depends on inherited environ
 or files outside the selected commit, declare them with `cache_env` / `cache_inputs` (or the
 matching command-line flags); undeclared external inputs cannot invalidate an existing cache.
 
-Reading config needs Python 3.11+ (or `pip install tomli` on 3.9/3.10); otherwise memblame
+Reading config needs Python 3.11+ (on 3.9/3.10 install `memblame[toml]`); otherwise memblame
 says so and uses the command line only.
 
 ## How it works

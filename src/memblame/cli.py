@@ -8,11 +8,13 @@ import math
 import os
 import signal
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from . import __version__, api, artifact, git, report
 from .contract import error_output, validate_output
-from .measure import MeasureError, Settings
+from .measure import MeasureError, Settings, validate_workload
 
 CONFIG_KEYS = {"workload", "runs", "nframe", "pythonpath", "python", "timeout", "threshold",
                "cache_env", "cache_inputs"}
@@ -53,7 +55,7 @@ def load_config(repo: Path) -> dict:
             continue
         for key in table or ():
             if not isinstance(data, dict):
-                raise ValueError(f"config in {name}: {'.'.join(table)} must be a table")
+                raise ValueError(f"config in {name}: {'.'.join(table or ())} must be a table")
             data = data.get(key, {})
         if not isinstance(data, dict):
             raise ValueError(f"config in {name}: {'.'.join(table or ())} must be a table")
@@ -124,18 +126,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-_CONFIG_TYPES = {"workload": str, "runs": int, "nframe": int, "python": str, "threshold": str,
-                 "timeout": (int, float), "pythonpath": (str, list),
-                 "cache_env": (str, list), "cache_inputs": (str, list)}
+_CONFIG_TYPES: dict[str, type | tuple[type, ...]] = {
+    "workload": str, "runs": int, "nframe": int, "python": str, "threshold": str,
+    "timeout": (int, float), "pythonpath": (str, list),
+    "cache_env": (str, list), "cache_inputs": (str, list)}
 
 
 def _check_types(config: dict) -> None:
-    for key, value in config.items():
+    for key, raw in config.items():
         expected = _CONFIG_TYPES[key]
-        if not isinstance(value, expected) or isinstance(value, bool):
+        if not isinstance(raw, expected) or isinstance(raw, bool):
             names = " or ".join(t.__name__ for t in (expected if isinstance(expected, tuple)
                                                      else (expected,)))
-            raise ValueError(f"config key {key!r} must be {names}, got {value!r}")
+            raise ValueError(f"config key {key!r} must be {names}, got {raw!r}")
+        # isinstance() against a variable class only narrows to object; the check above has
+        # already established the real type.
+        value: Any = raw
         if key in ("runs", "nframe") and value < 1:
             raise ValueError(f"config key {key!r} must be at least 1, got {value!r}")
         if key == "timeout" and (not math.isfinite(value) or value <= 0):
@@ -163,8 +169,7 @@ def settings_from(args: argparse.Namespace, config: dict, repo: Path | None = No
             "no workload. Pass -w, e.g. -w 'pytest:tests/test_big.py' or "
             "-w 'call:pkg.module:main', or set workload in [tool.memblame] in pyproject.toml"
         )
-    if workload.partition(":")[0] not in ("pytest", "script", "call"):
-        raise ValueError(f"bad workload {workload!r}: must start with pytest:, script: or call:")
+    validate_workload(workload)
     pythonpath = args.pythonpath or config.get("pythonpath")
     if isinstance(pythonpath, str):
         pythonpath = [pythonpath]
@@ -273,7 +278,7 @@ def _emit(rendered: str, output: str | None, label: str) -> bool:
     return True
 
 
-def _has_measurement_failure(out: dict) -> bool:
+def _has_measurement_failure(out: Mapping[str, Any]) -> bool:
     """A missing/failed measurement must not look like a successful regression check."""
     # A found bisect result can contain skipped intermediate commits. Its passing
     # endpoints still establish a regression, with uncertainty recorded in the report.
@@ -282,7 +287,7 @@ def _has_measurement_failure(out: dict) -> bool:
     return out["measurement_status"] != "complete"
 
 
-def _has_regression(out: dict) -> bool:
+def _has_regression(out: Mapping[str, Any]) -> bool:
     """Exit code 3 signals a significant memory increase (useful in CI)."""
     if out.get("kind") == "bisect":
         return out.get("status") == "found"

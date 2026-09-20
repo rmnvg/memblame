@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 
 def mb(n: int | float, signed: bool = False) -> str:
     v = n / 1e6
@@ -40,11 +43,11 @@ def _verdict_lines(v: dict, indent: str) -> list[str]:
     return []
 
 
-def _warnings(d: dict) -> list[str]:
+def _warnings(d: Mapping[str, Any]) -> list[str]:
     return [f"warning: {w}" for w in d.get("warnings", [])]
 
 
-def _status_line(d: dict) -> str | None:
+def _status_line(d: Mapping[str, Any]) -> str | None:
     status = d.get("measurement_status", "complete")
     if status == "complete":
         return None
@@ -53,7 +56,7 @@ def _status_line(d: dict) -> str | None:
             else "INCOMPLETE: one or more workloads did not pass; no regression conclusion")
 
 
-def format_run(d: dict) -> str:
+def format_run(d: Mapping[str, Any]) -> str:
     c, r = d["commit"], d["result"]
     if not r["valid"]:
         return "\n".join([f"{c['short']}  {c['subject']}   (measurement unavailable)",
@@ -74,7 +77,7 @@ def format_run(d: dict) -> str:
     return "\n".join(out + _warnings(d))
 
 
-def format_diff(d: dict) -> str:
+def format_diff(d: Mapping[str, Any]) -> str:
     a, b = d["base"], d["head"]
     out = [f"{a['short']} -> {b['short']}   {b['subject']}"]
     if not d["valid"]:
@@ -111,7 +114,7 @@ def format_diff(d: dict) -> str:
     return "\n".join(out + _warnings(d))
 
 
-def format_range(d: dict) -> str:
+def format_range(d: Mapping[str, Any]) -> str:
     points = d["points"]
     units: list[str] = []
     for p in points:
@@ -164,7 +167,7 @@ def format_range(d: dict) -> str:
     return "\n".join(out + _warnings(d))
 
 
-def _incomplete_note(d: dict) -> str:
+def _incomplete_note(d: Mapping[str, Any]) -> str:
     n = d.get("incomplete_commits", 0)
     which = f"{n} commit(s)" if n else "some commits"
     return (f"{which} could not be measured or did not pass. The findings below are between "
@@ -184,7 +187,7 @@ def _findings(findings: list[dict], points: list[dict]) -> list[str]:
     return out
 
 
-def format_bisect(d: dict) -> str:
+def format_bisect(d: Mapping[str, Any]) -> str:
     if d["status"] != "found":
         return "\n".join([f"bisect: {d['message']}"] + _warnings(d))
     c = d["culprit"]

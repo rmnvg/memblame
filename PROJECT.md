@@ -11,12 +11,12 @@ Working name: `memblame`. Change it any time.
 | 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
-| 5 VS Code extension | done; VSIX builds (~400 KB) | 19 node tests + 7-step integration test in real VS Code 1.138 |
+| 5 VS Code extension | done; VSIX builds (~400 KB) | 22 node tests + 7-step integration test in real VS Code 1.138 |
 | 6 Portable CI reports | done | Markdown + self-contained interactive HTML, all commands |
 | 7 Trust hardening (this pass) | done | cache inputs, shared status, bisect `--verify`, process groups, namespace check, typed contract, config precedence; sections 4 and 9 |
 
-Test suites: `pytest` (169 tests, ~150 s, order-independent under pytest-randomly; also run
-in full on Python 3.9 and 3.14), `ruff check src tests`, `cd vscode-ext && npm test` (19),
+Test suites: `pytest` (189 tests, ~150 s, order-independent under pytest-randomly; also run
+in full on Python 3.9 and 3.14), `ruff check src tests`, `cd vscode-ext && npm test` (22),
 `npm run test:integration` (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
 CI (`.github/workflows/ci.yml`) runs Linux/macOS/Windows × Python 3.9/3.12/3.14, the extension
@@ -27,10 +27,15 @@ Pythons: 3.9–3.14.
 `windows-latest` (Python 3.9/3.12/3.14): the whole Python suite, including the process-group
 termination tests, and the extension's unit tests plus the real-VS Code integration test
 (commit `c55bd18`, all 15 jobs green). That run found and fixed one Windows-only bug
-(`os.replace` "access denied" under concurrent cache writers). Not covered by anything
-automated: a person clicking through the extension on Windows (interpreter picker with a real
-Python extension installed, paths with spaces, Cancel during a long run), since the
-integration test runs with extensions disabled and no Windows machine is available.
+(`os.replace` "access denied" under concurrent cache writers). Of the three things that used
+to need a person on Windows: paths with spaces run in the integration test (`test folder/`),
+Cancel is now a unit test that cancels a real run mid-measurement and checks the worktree is
+gone (the SIGTERM path; on Windows `taskkill /F` leaves it, and the next run reclaims it, per
+`test_stale_worktree_from_killed_run_is_removed`), and the Python extension's API glue is a
+pure function (`selectedFromPythonApi`) tested against every shape it returns, including the
+degraded ones. What still needs a person: the picker against a *real* installed Python
+extension, since the integration test runs with `--disable-extensions` and no Windows machine
+is available.
 
 ## 1. One-paragraph summary
 
