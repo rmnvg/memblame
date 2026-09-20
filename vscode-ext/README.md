@@ -87,6 +87,7 @@ run that maps memory to functions and to the lines in `git diff`.
   a `src/` layout), MemBlame reports **invalid environment** instead of wrong numbers. Set
   `memblame.importPaths`.
 
-The same engine is available as a CLI (`pip install memblame`) for CI and terminals.
+The same engine is available as a CLI (`pip install memblame`) for CI and terminals, including
+portable Markdown and self-contained HTML reports via `--report md|html --output PATH`.
 
 **Privacy:** MemBlame sends nothing anywhere. It runs locally, in trusted workspaces only.

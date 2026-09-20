@@ -47,6 +47,8 @@ memblame diff main feature        # two revisions
 memblame range main~50..main      # timeline over a range (adaptive; --all for every commit)
 memblame bisect --good v1.2 --bad HEAD --threshold +20MB
 memblame run HEAD                 # one revision, with top allocating functions
+memblame diff main HEAD --report md -o memblame.md
+memblame range main~50..main --report html -o memblame.html
 ```
 
 Pick what to run with `-w` (or `workload` in `[tool.memblame]` in `pyproject.toml`):
@@ -75,6 +77,8 @@ inside the workload, e.g. `-w "script:'bench scripts/run.py'"`.
 | `--timeout S` | `900` | seconds per run; a commit that takes longer is skipped |
 | `--no-cache` | | ignore and don't write `.memblame/cache/` |
 | `--json` | | machine-readable output (`"schema": 1`), used by the VS Code extension |
+| `--report md\|html` | | portable Markdown or self-contained interactive HTML report |
+| `-o, --output PATH` | stdout | write terminal, JSON or report output to a file; parent directories are created |
 | `range --all` | | measure every commit instead of subdividing adaptively |
 | `bisect --good REV` / `--bad REV` | `--bad HEAD` | the range to search |
 | `bisect --threshold` | noise band | `200MB` (absolute), `+20MB` or `+10%` (relative to good) |
@@ -85,6 +89,27 @@ increase was found (handy in CI), `1` error or incomplete measurement, `2` not a
 Failed or skipped workloads, invalid environments, and inconsistent repeated runs return `1` for
 `run`, `diff`, and `range`, even if a partial report has findings. Bisect can still return
 `3` after skipping broken intermediate commits; unmeasurable or non-passing endpoints return `1`.
+
+### CI reports
+
+Markdown is suitable for a CI job summary, while HTML contains the measurements, attribution,
+warnings, raw schema-1 result and an interactive range timeline in one dependency-free file:
+
+```yaml
+- name: Check memory regression
+  run: |
+    memblame diff origin/main HEAD -w pytest:tests/test_pipeline.py \
+      --report html --output memblame.html
+- if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: memblame-report
+    path: memblame.html
+```
+
+Exit code `3` still fails the analysis step after writing the report, so the artifact is
+available for diagnosis without turning a regression green. For a GitHub job summary, use
+`--report md --output "$GITHUB_STEP_SUMMARY"`.
 
 ### Configuration
 

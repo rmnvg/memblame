@@ -9,7 +9,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import __version__, api, git, report
+from . import __version__, api, artifact, git, report
 from .measure import MeasureError, Settings
 
 CONFIG_KEYS = {"workload", "runs", "nframe", "pythonpath", "python", "timeout", "threshold"}
@@ -71,7 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--python", help="project interpreter (default: .venv or current)")
     common.add_argument("--timeout", type=float, help="seconds per run (default 900)")
     common.add_argument("--no-cache", action="store_true", help="ignore and don't write cache")
-    common.add_argument("--json", action="store_true", help="print JSON (schema 1)")
+    output = common.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="print JSON (schema 1)")
+    output.add_argument("--report", choices=["md", "markdown", "html"],
+                        help="render a portable Markdown or self-contained HTML report")
+    common.add_argument("-o", "--output", metavar="PATH",
+                        help="write the selected output to PATH instead of stdout")
 
     p = argparse.ArgumentParser(
         prog="memblame",
@@ -200,7 +205,22 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:  # worktrees were already removed by the session's __exit__
         print("memblame: interrupted", file=sys.stderr)
         return 130
-    print(json.dumps(out, indent=1) if args.json else fmt(out))
+    if args.json:
+        rendered, label = json.dumps(out, indent=1), "JSON"
+    elif args.report:
+        rendered, label = artifact.render(out, args.report), args.report.upper()
+    else:
+        rendered, label = fmt(out), "text"
+    if args.output:
+        try:
+            target = artifact.write(rendered, args.output)
+        except OSError as exc:
+            print(f"memblame: error: could not write report to {args.output}: {exc}",
+                  file=sys.stderr)
+            return 1
+        print(f"memblame: wrote {label} report to {target}", file=sys.stderr)
+    else:
+        print(rendered)
     if _has_measurement_failure(out):
         return 1
     return 3 if _has_regression(out) else 0
