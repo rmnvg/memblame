@@ -206,7 +206,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         repo = git.repo_root(Path(args.repo))
     except (git.GitError, OSError):
-        print(f"memblame: {args.repo} is not inside a git repository", file=sys.stderr)
+        message = f"{args.repo} is not inside a git repository"
+        print(f"memblame: {message}", file=sys.stderr)
+        if args.json:
+            # Same destination as a successful result, so `-o result.json` always holds JSON.
+            _emit(json.dumps(error_output(message)), args.output, "JSON")
         return 2
     try:
         config = load_config(repo)

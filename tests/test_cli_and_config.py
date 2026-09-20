@@ -216,6 +216,22 @@ def test_not_a_git_repository(tmp_path, capsys):
     assert code == 2 and "not inside a git repository" in err
 
 
+def test_not_a_git_repository_still_writes_the_json_error_document(tmp_path, capsys):
+    """`--json -o PATH` promises PATH always holds JSON, including on this early exit."""
+    target = tmp_path / "out" / "result.json"
+    code, _, err = run_cli(capsys, "diff", "-C", str(tmp_path), "-w", "call:a:b",
+                           "--json", "-o", str(target))
+    assert code == 2 and "not inside a git repository" in err
+    document = json.loads(target.read_text())
+    assert document["kind"] == "error" and document["schema"] == 1
+    assert "not inside a git repository" in document["error"]
+
+
+def test_not_a_git_repository_prints_the_json_error_document_to_stdout(tmp_path, capsys):
+    code, out, _ = run_cli(capsys, "run", "-C", str(tmp_path), "-w", "call:a:b", "--json")
+    assert code == 2 and json.loads(out)["kind"] == "error"
+
+
 # ------------------------------------------------------------------ configuration
 
 

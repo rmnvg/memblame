@@ -73,12 +73,28 @@ class PublicResult(TypedDict, total=False):
     result: dict[str, Any]
     results: dict[str, Any]
     units: Any
+    valid: bool
+    changed_functions: list[dict[str, Any]]
     points: list[dict[str, Any]]
+    mode: Literal["adaptive", "exhaustive"]
+    measured: int
     incomplete_commits: int
+    # `range` emits the per-segment comparisons as a list; `bisect` emits its step count.
+    steps: Any
     status: str
     message: str
+    good: CommitJSON
+    bad: CommitJSON
+    candidates: int
+    unit: str
+    metric: str
+    threshold: int
     culprit: CommitJSON
     parent: CommitJSON
+    culprit_range: list[str]
+    measurements: list[dict[str, Any]]
+    monotonic: bool | None
+    verified: bool
 
 
 def validate_output(data: dict[str, Any]) -> PublicResult:
@@ -103,4 +119,5 @@ def validate_output(data: dict[str, Any]) -> PublicResult:
     missing = [key for key in required if key not in data]
     if missing:
         raise ValueError(f"{kind} result is missing: {', '.join(missing)}")
-    return data  # type: ignore[return-value] - validated structural TypedDict
+    # A structural TypedDict cannot be narrowed from a plain dict by a checker.
+    return data  # type: ignore[return-value]

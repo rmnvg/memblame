@@ -26,6 +26,10 @@ jobs:
         run: |
           version=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/memblame/__init__.py').read_text()).group(1))")
           test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != package version v$version"; exit 1; }
+      - name: Tag must match the extension version
+        run: |
+          ext=$(python -c "import json; print(json.load(open('vscode-ext/package.json'))['version'])")
+          test "v$ext" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != extension version v$ext"; exit 1; }
       - run: python -m pip install build twine
       - run: python -m build
       - run: python -m twine check dist/*
