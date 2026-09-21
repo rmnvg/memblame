@@ -2,7 +2,10 @@
 
 The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/CHANGELOG.md).
 
-## Unreleased
+## 0.1.0
+
+First release: `run`, `diff`, `range` and `bisect` over git history, with function-level
+attribution, an on-disk cache, Markdown/HTML reports and a schema-1 JSON contract.
 
 ### Fixed
 
@@ -97,8 +100,3 @@ The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/
   user-data dir, tens of MB).
 - README: the GitHub job-summary recipe appends with `>>` instead of `-o
   "$GITHUB_STEP_SUMMARY"`, which replaced whatever an earlier step in the job had written.
-
-## 0.1.0
-
-- First release: `run`, `diff`, `range` and `bisect` over git history, with function-level
-  attribution, an on-disk cache, Markdown/HTML reports and a schema-1 JSON contract.
