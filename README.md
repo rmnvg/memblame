@@ -1,10 +1,39 @@
 # memblame: git blame for memory
 
+[![PyPI](https://img.shields.io/pypi/v/memblame)](https://pypi.org/project/memblame/)
+[![Python versions](https://img.shields.io/pypi/pyversions/memblame)](https://pypi.org/project/memblame/)
+[![CI](https://github.com/rmnvg/memblame/actions/workflows/ci.yml/badge.svg)](https://github.com/rmnvg/memblame/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/rmnvg/memblame/blob/main/LICENSE)
+
 Find **the commit and the function** that made your Python code use more memory.
 
 memblame runs your own workload (a pytest test, a script or a function) at several git
 commits, measures memory with `tracemalloc`, and maps any growth to the function and the
 diff hunk that caused it.
+
+## Quick start
+
+```
+pip install memblame              # or: pipx install memblame
+cd your-project                   # any git repository with Python code
+memblame range HEAD~20..HEAD -w "pytest:tests/test_something.py"
+```
+
+That runs the test at several of the last 20 commits and reports where memory changed, and
+which function did it. memblame finds your project's virtualenv (`.venv`, or `backend/.venv`
+next to the tests you name); if yours lives elsewhere, add `--python path/to/python`.
+
+Want to see it work before pointing it at your own code? This builds a small repository with
+two memory regressions planted in its history and finds both:
+
+```
+git clone https://github.com/rmnvg/memblame && cd memblame
+python tests/fixture_repo.py /tmp/demo-repo planted
+cd /tmp/demo-repo
+memblame range HEAD~9..HEAD -w call:shop.app:run
+```
+
+The numbers differ a little per machine; the report looks like this.
 
 ```
 $ memblame range main~9..main -w call:shop.app:run
@@ -70,7 +99,7 @@ inside the workload, e.g. `-w "script:'bench scripts/run.py'"`.
 |---|---|---|
 | `-w, --workload` | from config | what to run (table above) |
 | `-C, --repo` | `.` | repository to analyse |
-| `--python` | active venv / conda env, else `.venv`/`venv` in the repo, else the current Python | interpreter with your project's dependencies (3.9+) |
+| `--python` | active venv / conda env, else `.venv`/`venv` in the repo, else one next to the workload (`backend/.venv` for `pytest:backend/tests/...`), else the current Python | interpreter with your project's dependencies (3.9+) |
 | `--pythonpath DIR` | `src` + `.` if `src/` exists, else `.` | where to import your project from; repeatable |
 | `--runs N` | `3` | maximum runs per commit (stops early once two runs agree) |
 | `--nframe N` | `16` | traceback depth for attribution; raise it if a verdict notes truncated stacks |

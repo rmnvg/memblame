@@ -52,16 +52,93 @@ class Settings:
         return d
 
 
-def find_python(repo: Path, explicit: str | None = None) -> str:
-    """The interpreter that has the project's dependencies installed."""
+_VENV_NAMES = (".venv", "venv")
+_NO_VENV_SEARCH = {"node_modules", "site-packages", "dist", "build", "__pycache__"}
+
+
+def _venv_python(base: Path) -> str | None:
+    for rel in ("bin/python", "Scripts/python.exe", "python.exe"):
+        if (base / rel).exists():
+            return str(base / rel)
+    return None
+
+
+def _workload_dirs(repo: Path, workload: str | None) -> list[Path]:
+    """The directories a workload names, deepest first, up to (not including) the repo root.
+
+    `pytest:backend/tests/test_x.py::test_y` names backend/tests and backend, so a virtualenv
+    kept next to the code under test (backend/.venv) is found without configuration.
+    """
+    if not workload:
+        return []
+    kind, _, target = workload.partition(":")
+    if kind not in ("pytest", "script"):
+        return []
+    try:
+        tokens = split_args(target)
+    except ValueError:
+        return []
+    root = repo.resolve()
+    seen: list[Path] = []
+    for token in tokens:
+        if token.startswith("-"):
+            continue
+        path = Path(token.split("::", 1)[0])
+        full = (root / path).resolve()
+        directory = full if full.is_dir() else full.parent
+        try:
+            directory.relative_to(root)
+        except ValueError:
+            continue
+        while directory != root:
+            if directory not in seen:
+                seen.append(directory)
+            directory = directory.parent
+    return sorted(seen, key=lambda d: len(d.parts), reverse=True)
+
+
+def _nested_venvs(repo: Path) -> list[str]:
+    """Interpreters of virtualenvs kept one directory below the repository root."""
+    found: list[str] = []
+    try:
+        children = sorted(repo.iterdir())
+    except OSError:
+        return found
+    for child in children:
+        if child.name.startswith(".") or child.name in _NO_VENV_SEARCH or not child.is_dir():
+            continue
+        for name in _VENV_NAMES:
+            python = _venv_python(child / name)
+            if python:
+                found.append(python)
+                break
+    return found
+
+
+def find_python(repo: Path, explicit: str | None = None, workload: str | None = None) -> str:
+    """The interpreter that has the project's dependencies installed.
+
+    Order: --python, the active environment, .venv/venv at the repository root, then a
+    virtualenv in a directory the workload names (backend/.venv for a test under backend/),
+    then a virtualenv one level below the root if there is exactly one. Otherwise the
+    interpreter memblame itself runs on.
+    """
     if explicit:
         return explicit
     candidates = [Path(os.environ[v]) for v in ("VIRTUAL_ENV", "CONDA_PREFIX") if os.environ.get(v)]
     candidates += [repo / ".venv", repo / "venv"]
     for base in candidates:
-        for rel in ("bin/python", "Scripts/python.exe", "python.exe"):
-            if (base / rel).exists():
-                return str(base / rel)
+        python = _venv_python(base)
+        if python:
+            return python
+    for directory in _workload_dirs(repo, workload):
+        for name in _VENV_NAMES:
+            python = _venv_python(directory / name)
+            if python:
+                return python
+    nested = _nested_venvs(repo)
+    if len(nested) == 1:
+        return nested[0]
     return sys.executable
 
 

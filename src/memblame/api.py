@@ -41,7 +41,7 @@ class Session:
         self.repo = git.repo_root(repo)
         validate_workload(settings.workload)
         self.settings = replace(settings, workload=normalize_workload(self.repo, settings.workload))
-        self.python = find_python(self.repo, settings.python)
+        self.python = find_python(self.repo, settings.python, self.settings.workload)
         check_interpreter(self.python)
         self.cache = Cache(self.repo, self.python, self.settings, enabled=use_cache)
         self.progress = progress
