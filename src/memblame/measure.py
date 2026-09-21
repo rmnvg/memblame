@@ -296,6 +296,11 @@ def _terminate_process_tree(proc: subprocess.Popen, leftovers_only: bool = False
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             return
+        except PermissionError:
+            # macOS answers EPERM, not ESRCH, when every process left in the group is already
+            # dead (a workload that exits just as its timeout fires). Nothing is left to
+            # terminate; carry on to reap the runner and to the forceful signal below.
+            pass
         try:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:

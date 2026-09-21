@@ -2,6 +2,21 @@
 
 The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/CHANGELOG.md).
 
+## Unreleased
+
+### Fixed
+
+- A workload that exited just as its timeout fired could abort the whole measurement with
+  `PermissionError: Operation not permitted` on macOS. macOS answers `EPERM`, not `ESRCH`,
+  when every process left in a process group is already dead, and only the second of the two
+  signals sent to the group tolerated that. Found by CI (macOS, Python 3.14), where it
+  showed up as a rare failure of `test_timeout_terminates_workload_descendants`.
+
+### Documentation
+
+- README: the editor extension is described as what it is: on Open VSX for Cursor, VSCodium
+  and Windsurf, and a `.vsix` download for VS Code, not yet on the VS Code Marketplace.
+
 ## 0.1.1
 
 ### Fixed

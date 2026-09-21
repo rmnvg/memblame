@@ -55,8 +55,13 @@ Findings:
         hot line shop/parse.py:8  57.3 MB
 ```
 
-There is also a **VS Code extension** (in `vscode-ext/`) that shows a timeline, CodeLens
-above the blamed function, and a one-click "Memory vs HEAD" on every pytest test.
+There is also an **editor extension** (source in `vscode-ext/`) that shows a timeline,
+CodeLens above the blamed function, and a one-click "Memory vs HEAD" on every pytest test.
+It is on [Open VSX](https://open-vsx.org/extension/memblame/memblame): search for
+**MemBlame** in the Extensions view of Cursor, VSCodium or Windsurf. For VS Code, download
+the `.vsix` from the [v0.1.0 release](https://github.com/rmnvg/memblame/releases/tag/v0.1.0)
+and run `code --install-extension memblame-0.1.0.vsix`; it is not on the VS Code
+Marketplace yet.
 
 ![report](https://raw.githubusercontent.com/rmnvg/memblame/main/vscode-ext/media/report-range.png)
 
@@ -107,7 +112,7 @@ inside the workload, e.g. `-w "script:'bench scripts/run.py'"`.
 | `--no-cache` | | ignore and don't write `.memblame/cache/` |
 | `--cache-env NAME` | | invalidate cached measurements when this environment variable changes; repeatable |
 | `--cache-input PATH` | | invalidate cached measurements when this file or directory changes; repeatable |
-| `--json` | | machine-readable output (`"schema": 1`), used by the VS Code extension |
+| `--json` | | machine-readable output (`"schema": 1`), used by the editor extension |
 | `--report md\|html` | | portable Markdown or self-contained interactive HTML report |
 | `-o, --output PATH` | stdout | write terminal, JSON or report output to a file; parent directories are created |
 | `range --all` | | measure every commit instead of subdividing adaptively |

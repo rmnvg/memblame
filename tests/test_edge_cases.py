@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -200,6 +201,31 @@ def _wait_until_gone(pid: int) -> bool:
             return True
         time.sleep(0.02)
     return False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX-only")
+def test_terminating_a_group_of_dead_processes_is_not_an_error(monkeypatch):
+    """macOS answers EPERM, not ESRCH, when every process left in a group is already dead.
+
+    A workload that exits just as its timeout fires leaves exactly that behind, and the first
+    signal used to let the PermissionError escape and abort the whole measurement.
+    """
+    sent: list[int] = []
+
+    def killpg(pid: int, sig: int) -> None:
+        sent.append(sig)
+        raise PermissionError(1, "Operation not permitted")
+
+    class Reaped:
+        pid = 4242
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(measure.os, "killpg", killpg)
+    measure._terminate_process_tree(Reaped())  # type: ignore[arg-type]
+    # it still went on to the second, forceful signal for any stubborn descendant
+    assert sent == [signal.SIGTERM, signal.SIGKILL]
 
 
 def test_timeout_terminates_workload_descendants(tmp_path):
