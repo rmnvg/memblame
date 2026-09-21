@@ -15,7 +15,7 @@ Working name: `memblame`. Change it any time.
 | 6 Portable CI reports | done | Markdown + self-contained interactive HTML, all commands |
 | 7 Trust hardening (this pass) | done | cache inputs, shared status, bisect `--verify`, process groups, namespace check, typed contract, config precedence; sections 4 and 9 |
 
-Test suites: `pytest` (191 tests, ~150 s, order-independent under pytest-randomly; also run
+Test suites: `pytest` (194 tests, ~150 s, order-independent under pytest-randomly; also run
 in full on Python 3.9 and 3.14), `ruff check src tests`, `cd vscode-ext && npm test` (22),
 `npm run test:integration` (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).

@@ -329,6 +329,59 @@ def test_find_python_prefers_explicit_then_active_env_then_repo_venv(tmp_path, m
     assert measure.find_python(repo, "/explicit/python") == "/explicit/python"
 
 
+def _no_active_env(monkeypatch):
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+
+
+def test_find_python_uses_the_venv_next_to_the_workload(tmp_path, monkeypatch):
+    """A monorepo keeps its environment beside the code (backend/.venv), not at the root."""
+    _no_active_env(monkeypatch)
+    repo = tmp_path / "repo"
+    (repo / "backend" / "tests").mkdir(parents=True)
+    (repo / "worker").mkdir()
+    backend = _fake_python(repo / "backend" / ".venv")
+    _fake_python(repo / "worker" / ".venv")  # a second environment must not confuse it
+    workload = "pytest:backend/tests/test_models.py::test_a -k slow"
+    assert measure.find_python(repo, None, workload) == str(backend)
+    # the same holds for a script and for a directory of tests
+    (repo / "backend" / "bench").mkdir()
+    assert measure.find_python(repo, None, "script:backend/bench/run.py --n 5") == str(backend)
+    assert measure.find_python(repo, None, "pytest:backend/tests") == str(backend)
+
+
+def test_find_python_nested_venv_without_a_hint_needs_to_be_unambiguous(tmp_path, monkeypatch):
+    _no_active_env(monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    only = _fake_python(repo / "backend" / "venv")
+    assert measure.find_python(repo, None, "call:app.main:run") == str(only)
+    assert measure.find_python(repo) == str(only)
+    _fake_python(repo / "worker" / ".venv")
+    # two candidates and nothing to choose between them: do not guess
+    assert measure.find_python(repo, None, "call:app.main:run") == sys.executable
+
+
+def test_find_python_root_env_still_wins_and_odd_places_are_ignored(tmp_path, monkeypatch):
+    _no_active_env(monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    backend = _fake_python(repo / "backend" / ".venv")
+    _fake_python(repo / "node_modules" / ".venv")
+    _fake_python(repo / ".hidden" / ".venv")
+    _fake_python(tmp_path / "elsewhere" / ".venv")
+    root = _fake_python(repo / ".venv")
+    assert measure.find_python(repo, None, "pytest:backend/tests") == str(root)
+    root.unlink()
+    root.parent.rmdir()
+    root.parent.parent.rmdir()
+    # vendored and hidden directories are not project environments: were they counted,
+    # backend/.venv would no longer be the only one and nothing would be chosen
+    assert measure.find_python(repo) == str(backend)
+    # a workload path that leaves the repository is not searched
+    assert measure.find_python(repo, None, "script:../elsewhere/run.py") == str(backend)
+
+
 def test_unusable_interpreter_is_a_clear_error(tmp_path, capsys):
     r = Repo(tmp_path / "repo")
     r.commit({"a.py": ""}, "v1")

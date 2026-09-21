@@ -43,7 +43,8 @@ export interface InterpreterChoice {
  *   1. the explicit `memblame.pythonPath` setting
  *   2. `python` in the repository's memblame.toml / [tool.memblame]  (the CLI applies it)
  *   3. the interpreter selected in the Python extension
- *   4. the CLI's auto-discovery: active venv/conda env, then .venv or venv in the repository
+ *   4. the CLI's auto-discovery: active venv/conda env, then .venv or venv in the repository,
+ *      then one beside the workload (backend/.venv for tests under backend/)
  *   5. python3 / python
  * The CLI's own --python flag beats repository config, so --python is only passed when
  * nothing in the repository should win (case 1 and 3).

@@ -2,6 +2,24 @@
 
 The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/CHANGELOG.md).
 
+## 0.1.1
+
+### Fixed
+
+- The project interpreter is now found when the virtualenv is not at the repository root.
+  Monorepos usually keep it beside the code (`backend/.venv`), and memblame used to fall back
+  to its own Python there, which has none of the project's dependencies, so the first run
+  failed. After `--python`, the active environment and `.venv`/`venv` at the root, it now
+  looks in the directories the workload names (`pytest:backend/tests/...` finds
+  `backend/.venv`), then at a virtualenv one level below the root if there is exactly one.
+  With several candidates and nothing to choose between them it still does not guess.
+
+### Documentation
+
+- README: a quick start at the top, including a demo repository that reproduces the sample
+  report on any machine, and badges.
+- PyPI project links to the changelog and the README.
+
 ## 0.1.0
 
 First release: `run`, `diff`, `range` and `bisect` over git history, with function-level

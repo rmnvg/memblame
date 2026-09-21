@@ -2,7 +2,7 @@
   "name": "memblame",
   "displayName": "MemBlame: git blame for memory",
   "description": "Find the commit and the function that made your Python code use more memory. Compares memory across git commits and maps growth to the lines that changed.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "memblame",
   "license": "MIT",
   "icon": "media/icon.png",
