@@ -11,3 +11,4 @@ vscode-ext/out/
 vscode-ext/*.vsix
 vscode-ext/python/
 vscode-ext/.vscode-test/
+.coverage

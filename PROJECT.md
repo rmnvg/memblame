@@ -2,7 +2,7 @@
 
 Working name: `memblame`. Change it any time.
 
-## 0. Status (2026-09-20)
+## 0. Status (2026-09-21)
 
 | Phase | State | Evidence |
 |---|---|---|
@@ -11,11 +11,11 @@ Working name: `memblame`. Change it any time.
 | 2 `range` + cache | done, **adaptive by default** (`--all` for every commit) | cached re-run measures 0 commits |
 | 3 `bisect` | done | finds planted commit in ≤ ⌈log₂ N⌉ steps |
 | 4 Real repos | done: markdown-it-py, tomlkit, pyparsing | section 10 |
-| 5 VS Code extension | done; VSIX builds (~400 KB) | 22 node tests + 7-step integration test in real VS Code 1.138 |
+| 5 VS Code extension | done; VSIX builds (~79 KB) | 22 node tests + 7-step integration test in real VS Code 1.138 |
 | 6 Portable CI reports | done | Markdown + self-contained interactive HTML, all commands |
 | 7 Trust hardening (this pass) | done | cache inputs, shared status, bisect `--verify`, process groups, namespace check, typed contract, config precedence; sections 4 and 9 |
 
-Test suites: `pytest` (189 tests, ~150 s, order-independent under pytest-randomly; also run
+Test suites: `pytest` (191 tests, ~150 s, order-independent under pytest-randomly; also run
 in full on Python 3.9 and 3.14), `ruff check src tests`, `cd vscode-ext && npm test` (22),
 `npm run test:integration` (7 steps in a real VS Code; set
 `VSCODE_EXECUTABLE="/Applications/Visual Studio Code.app/Contents/MacOS/Code"`).
@@ -348,8 +348,8 @@ Release checks:
 5. Record the GIF.
 
 Worth doing next (in order of value):
-1. If a Windows user reports trouble, the untested areas are the Python-extension
-   interpreter picker, paths with spaces and Cancel; everything else runs on Windows CI.
+1. If a Windows user reports trouble, the one untested area is the Python-extension
+   interpreter picker (see the Windows status above); everything else runs on Windows CI.
 2. A GitHub Action wrapper that posts the Markdown report on PRs; the CLI already produces
    Markdown/HTML artifacts and fails on exit code 3 or an incomplete/error result (exit code 1).
 3. Pytest-plugin-style workload: "all tests in a directory" is supported, but the report
