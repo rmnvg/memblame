@@ -11,6 +11,8 @@ memblame runs your own workload (a pytest test, a script or a function) at sever
 commits, measures memory with `tracemalloc`, and maps any growth to the function and the
 diff hunk that caused it.
 
+![memblame demo](docs/demo.gif)
+
 ## Quick start
 
 ```
