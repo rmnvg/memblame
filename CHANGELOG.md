@@ -2,7 +2,7 @@
 
 The VS Code extension keeps its own log in [vscode-ext/CHANGELOG.md](vscode-ext/CHANGELOG.md).
 
-## Unreleased
+## 0.1.2
 
 ### Fixed
 

@@ -59,9 +59,9 @@ There is also an **editor extension** (source in `vscode-ext/`) that shows a tim
 CodeLens above the blamed function, and a one-click "Memory vs HEAD" on every pytest test.
 It is on [Open VSX](https://open-vsx.org/extension/memblame/memblame): search for
 **MemBlame** in the Extensions view of Cursor, VSCodium or Windsurf. For VS Code, download
-the `.vsix` from the [v0.1.0 release](https://github.com/rmnvg/memblame/releases/tag/v0.1.0)
-and run `code --install-extension memblame-0.1.0.vsix`; it is not on the VS Code
-Marketplace yet.
+the `.vsix` from the [latest release](https://github.com/rmnvg/memblame/releases/latest)
+and run `code --install-extension memblame-*.vsix`; it is not on the VS Code Marketplace
+yet.
 
 ![report](https://raw.githubusercontent.com/rmnvg/memblame/main/vscode-ext/media/report-range.png)
 
